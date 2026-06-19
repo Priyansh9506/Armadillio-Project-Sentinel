@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="../Armadillo-Logo.png" alt="Armadillo Logo" width="150"/>
+  <img src="Armadillo-Logo.png" alt="Armadillo Logo" width="150"/>
 
   # 🛡️ Project Sentinel
   **Next-Generation Continuous Authentication & Fraud Prevention**
