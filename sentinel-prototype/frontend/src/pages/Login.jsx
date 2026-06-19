@@ -4,7 +4,8 @@ import { authAPI } from '../api';
 
 export default function Login() {
   const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [credential, setCredential] = useState('');
+  const [loginType, setLoginType] = useState('password'); // 'password', 'pin', 'otp'
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
@@ -15,7 +16,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const res = await authAPI.login({ username, password });
+      const res = await authAPI.login({ username, credential, login_type: loginType });
       const { token, refresh_token, session_id, user } = res.data;
 
       localStorage.setItem('sentinel_token', token);
@@ -57,8 +58,15 @@ export default function Login() {
           </p>
         </div>
 
+        {/* Login Type Tabs */}
+        <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}>
+          <button type="button" className={`btn ${loginType === 'password' ? 'btn-primary' : 'btn-outline'}`} style={{ flex: 1, padding: '8px' }} onClick={() => { setLoginType('password'); setCredential(''); }}>Password</button>
+          <button type="button" className={`btn ${loginType === 'pin' ? 'btn-primary' : 'btn-outline'}`} style={{ flex: 1, padding: '8px' }} onClick={() => { setLoginType('pin'); setCredential(''); }}>PIN</button>
+          <button type="button" className={`btn ${loginType === 'otp' ? 'btn-primary' : 'btn-outline'}`} style={{ flex: 1, padding: '8px' }} onClick={() => { setLoginType('otp'); setCredential(''); }}>OTP</button>
+        </div>
+
         {/* Login Form */}
-        <form onSubmit={handleLogin} style={{ marginTop: 32 }}>
+        <form onSubmit={handleLogin}>
           <div className="input-group mb-4">
             <label>Mobile Number / Customer ID</label>
             <input
@@ -74,15 +82,15 @@ export default function Login() {
           </div>
 
           <div className="input-group mb-4">
-            <label>Password</label>
+            <label>{loginType === 'password' ? 'Password' : loginType === 'pin' ? 'Login PIN' : 'Enter OTP'}</label>
             <input
-              id="login-password"
-              type="password"
+              id="login-credential"
+              type={loginType === 'password' || loginType === 'pin' ? 'password' : 'text'}
               className="input-field"
-              placeholder="Enter your password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
+              placeholder={loginType === 'password' ? 'Enter your password' : loginType === 'pin' ? 'Enter 6-digit PIN' : 'Enter 6-digit OTP'}
+              value={credential}
+              onChange={(e) => setCredential(e.target.value)}
+              autoComplete={loginType === 'password' ? 'current-password' : 'off'}
               required
             />
           </div>

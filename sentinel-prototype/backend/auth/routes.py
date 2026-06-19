@@ -29,7 +29,8 @@ class RegisterRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     username: str
-    password: str
+    credential: str
+    login_type: str = "password"  # password, pin, otp
 
 class RefreshRequest(BaseModel):
     refresh_token: str
@@ -162,15 +163,25 @@ async def login(req: LoginRequest, request: Request):
     """Login with username and password. Returns access + refresh token pair."""
     with get_db() as db:
         user = db.execute(
-            "SELECT id, username, email, password_hash FROM users WHERE username = ?",
-            (req.username,)
+            "SELECT id, username, email, password_hash, upi_pin_hash FROM users WHERE username = ? OR phone_no = ?",
+            (req.username, req.username)
         ).fetchone()
 
         if not user:
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
-        if not bcrypt.checkpw(req.password.encode(), user["password_hash"].encode()):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if req.login_type == "password":
+            if not bcrypt.checkpw(req.credential.encode(), user["password_hash"].encode()):
+                raise HTTPException(status_code=401, detail="Invalid password")
+        elif req.login_type == "pin":
+            import hashlib
+            pin_hash = hashlib.sha256(req.credential.encode()).hexdigest()
+            if pin_hash != user["upi_pin_hash"]:
+                raise HTTPException(status_code=401, detail="Invalid PIN")
+        elif req.login_type == "otp":
+            # Mock OTP logic for prototype - accepts any 6 digit OTP or 123456
+            if len(req.credential) != 6 or not req.credential.isdigit():
+                raise HTTPException(status_code=401, detail="Invalid OTP format")
 
         session_id = str(uuid.uuid4())
 

@@ -14,25 +14,33 @@ def compute_behavioral_score(current: dict, baseline: dict) -> float:
     """
     score = 100.0
 
-    # ── Keystroke Flight Time ──
-    if baseline.get("avg_flight_time", 0) > 0 and baseline.get("std_flight_time", 0) > 0:
-        flight_z = abs(current.get("avg_flight_time", 0) - baseline["avg_flight_time"]) / max(baseline["std_flight_time"], 1)
-        score -= min(flight_z * 10, 30)  # Max -30 penalty
+    current_flight = current.get("avg_flight_time") or 0.0
+    b_flight = baseline.get("avg_flight_time") or 0.0
+    b_std_flight = baseline.get("std_flight_time") or 0.0
+    # Only penalize if user is actually typing (current_flight > 0)
+    if b_flight > 0 and b_std_flight > 0 and current_flight > 0:
+        flight_z = abs(current_flight - b_flight) / max(b_std_flight, 1)
+        score -= min(flight_z * 10, 30)
 
     # ── Keystroke Dwell Time ──
-    if baseline.get("avg_dwell_time", 0) > 0 and baseline.get("std_dwell_time", 0) > 0:
-        dwell_z = abs(current.get("avg_dwell_time", 0) - baseline["avg_dwell_time"]) / max(baseline["std_dwell_time"], 1)
-        score -= min(dwell_z * 10, 25)  # Max -25 penalty
+    current_dwell = current.get("avg_dwell_time") or 0.0
+    b_dwell = baseline.get("avg_dwell_time") or 0.0
+    b_std_dwell = baseline.get("std_dwell_time") or 0.0
+    if b_dwell > 0 and b_std_dwell > 0 and current_dwell > 0:
+        dwell_z = abs(current_dwell - b_dwell) / max(b_std_dwell, 1)
+        score -= min(dwell_z * 10, 25)
 
     # ── Typing Speed ──
-    if baseline.get("avg_typing_speed", 0) > 0:
-        speed_ratio = current.get("typing_speed", 0) / max(baseline["avg_typing_speed"], 0.1)
+    current_speed = current.get("typing_speed") or 0.0
+    b_speed = baseline.get("avg_typing_speed") or 0.0
+    if b_speed > 0 and current_speed > 0:
+        speed_ratio = current_speed / max(b_speed, 0.1)
         if speed_ratio > 1.3 or speed_ratio < 0.7:
-            score -= 20  # >30% speed deviation
+            score -= 20
 
     # ── Mouse Straightness (Bot Detection) ──
-    if current.get("mouse_straightness", 0) > 0.95:
-        score -= 15  # Too straight = bot-like
+    if (current.get("mouse_straightness") or 0.0) > 0.95:
+        score -= 15
 
     return max(score, 0)
 
@@ -48,19 +56,26 @@ def update_baseline(user_id: int, metrics: dict, db_conn) -> None:
 
     if not baseline:
         return
+    baseline = dict(baseline)
 
-    sample_count = baseline["sample_count"]
+    sample_count = baseline.get("sample_count") or 0
     alpha = 0.1 if sample_count > 10 else 0.3  # Learn faster initially
 
-    new_avg_flight = _ema(baseline["avg_flight_time"], metrics.get("avg_flight_time", 0), alpha)
-    new_avg_dwell = _ema(baseline["avg_dwell_time"], metrics.get("avg_dwell_time", 0), alpha)
-    new_avg_speed = _ema(baseline["avg_typing_speed"], metrics.get("typing_speed", 0), alpha)
+    b_flight = baseline.get("avg_flight_time") or 0.0
+    b_dwell = baseline.get("avg_dwell_time") or 0.0
+    b_speed = baseline.get("avg_typing_speed") or 0.0
+    b_std_flight = baseline.get("std_flight_time") or 0.0
+    b_std_dwell = baseline.get("std_dwell_time") or 0.0
+
+    new_avg_flight = _ema(b_flight, metrics.get("avg_flight_time") or 0, alpha)
+    new_avg_dwell = _ema(b_dwell, metrics.get("avg_dwell_time") or 0, alpha)
+    new_avg_speed = _ema(b_speed, metrics.get("typing_speed") or 0, alpha)
 
     # Update standard deviations using running calculation
-    new_std_flight = _running_std(baseline["std_flight_time"], baseline["avg_flight_time"],
-                                   metrics.get("avg_flight_time", 0), sample_count)
-    new_std_dwell = _running_std(baseline["std_dwell_time"], baseline["avg_dwell_time"],
-                                  metrics.get("avg_dwell_time", 0), sample_count)
+    new_std_flight = _running_std(b_std_flight, b_flight,
+                                   metrics.get("avg_flight_time") or 0, sample_count)
+    new_std_dwell = _running_std(b_std_dwell, b_dwell,
+                                  metrics.get("avg_dwell_time") or 0, sample_count)
 
     db_conn.execute("""
         UPDATE behavioral_baselines SET

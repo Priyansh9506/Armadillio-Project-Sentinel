@@ -22,6 +22,9 @@ def init_db():
             totp_secret TEXT,
             upi_pin_hash TEXT,
             duress_pin TEXT DEFAULT '9999',
+            account_no TEXT,
+            upi_id TEXT,
+            phone_no TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 

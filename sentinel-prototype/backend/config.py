@@ -28,8 +28,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_PATH = BASE_DIR / "sentinel.db"
 
 # Trust Score Thresholds
-TRUST_ALLOW_THRESHOLD = 85
-TRUST_STEP_UP_THRESHOLD = 55
+TRUST_ALLOW_THRESHOLD = 10
+TRUST_STEP_UP_THRESHOLD = 5
 
 # Telemetry
 TELEMETRY_WINDOW_SECONDS = 3

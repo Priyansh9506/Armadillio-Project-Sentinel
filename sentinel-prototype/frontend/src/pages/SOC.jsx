@@ -212,7 +212,7 @@ export default function SOC() {
                 No active sessions.
               </p>
             ) : (
-              <div style={{ overflowX: 'auto' }}>
+              <div style={{ maxHeight: 500, overflowY: 'auto', overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--border-subtle)' }}>

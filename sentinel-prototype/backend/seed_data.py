@@ -1,5 +1,6 @@
 import sqlite3
 import bcrypt
+import hashlib
 from datetime import datetime, timedelta
 import random
 from config import DB_PATH
@@ -15,39 +16,30 @@ def seed():
     
     # Let's just insert alerts and past trust logs for the SOC dashboard
     
-    # Ensure a realistic user exists (Mobile Number: 9876543210)
-    pwd_hash = bcrypt.hashpw(b"password", bcrypt.gensalt()).decode('utf-8')
-    try:
-        cursor.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
-            ("9876543210", "priyansh@armadillo.com", pwd_hash)
-        )
-        priyansh_id = cursor.lastrowid
-    except sqlite3.IntegrityError:
-        cursor.execute("SELECT id FROM users WHERE username = '9876543210'")
-        priyansh_id = cursor.fetchone()[0]
+    # Common Password and PIN Hashes
+    pwd_hash = bcrypt.hashpw(b"password123", bcrypt.gensalt()).decode('utf-8')
+    upi_pin_hash = hashlib.sha256(b"1234").hexdigest()
 
-    # Ensure a 'victim' user exists
-    pwd_hash_victim = bcrypt.hashpw(b"Password123!", bcrypt.gensalt()).decode('utf-8')
-    try:
-        cursor.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
-            ("victim_demo", "victim@bankofbaroda.com", pwd_hash_victim)
-        )
-        victim_id = cursor.lastrowid
-    except sqlite3.IntegrityError:
-        cursor.execute("SELECT id FROM users WHERE username = 'victim_demo'")
-        victim_id = cursor.fetchone()[0]
+    mock_users = [
+        ("priyansh", "priyansh@armadillo.com", "Priyansh Patel", "100010001000", "priyansh@bob", "9876543210"),
+        ("vyom", "vyom@armadillo.com", "Vyom Patel", "200020002000", "vyom@bob", "9123456789"),
+        ("chirag", "chirag@armadillo.com", "Chirag Bhanushali", "300030003000", "chirag@bob", "9988776655")
+    ]
 
-    try:
-        cursor.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
-            ("insider_threat", "insider@bankofbaroda.com", pwd_hash)
-        )
-        insider_id = cursor.lastrowid
-    except sqlite3.IntegrityError:
-        cursor.execute("SELECT id FROM users WHERE username = 'insider_threat'")
-        insider_id = cursor.fetchone()[0]
+    user_ids = []
+    for uname, email, fullname, acc_no, upi, phone in mock_users:
+        try:
+            cursor.execute(
+                """INSERT INTO users (username, email, password_hash, upi_pin_hash, account_no, upi_id, phone_no) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (uname, email, pwd_hash, upi_pin_hash, acc_no, upi, phone)
+            )
+            user_ids.append(cursor.lastrowid)
+        except sqlite3.IntegrityError:
+            cursor.execute("SELECT id FROM users WHERE username = ?", (uname,))
+            user_ids.append(cursor.fetchone()[0])
+
+    priyansh_id, victim_id, insider_id = user_ids
 
     # Seed Alerts
     alerts = [
@@ -94,12 +86,13 @@ def seed():
         if row:
             priyansh_id = row[0]
             
-            # Insert a healthy behavioral baseline
-            cursor.execute("""
-                INSERT OR REPLACE INTO behavioral_baselines 
-                (user_id, avg_flight_time, avg_dwell_time, avg_typing_speed, avg_mouse_speed, sample_count) 
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (priyansh_id, 150.0, 80.0, 5.0, 300.0, 100))
+            # Insert a healthy behavioral baseline for ALL mocked users so ML Model works
+            for uid in user_ids:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO behavioral_baselines 
+                    (user_id, avg_flight_time, avg_dwell_time, avg_typing_speed, avg_mouse_speed, sample_count) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (uid, 150.0, 80.0, 5.0, 300.0, 100))
 
             # Insert normal transactions
             transactions = [

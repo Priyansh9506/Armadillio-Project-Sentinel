@@ -35,6 +35,9 @@ export default function Dashboard() {
   const [newPin, setNewPin] = useState('');
   const [pinChangeStatus, setPinChangeStatus] = useState(null);
   const [pendingPinChange, setPendingPinChange] = useState(false);
+  
+  // Hackathon Demo Mode: Give presenter control over the auto-lock popup
+  const [demoAutoLock, setDemoAutoLock] = useState(false);
 
   const showMFARef = useRef(false);
   const lastVerifiedRef = useRef(0);
@@ -56,6 +59,14 @@ export default function Dashboard() {
 
     // Start the telemetry SDK
     telemetrySDK.start(sessionId, (data) => {
+      // 60-second grace period after a successful MFA verification
+      if (Date.now() - lastVerifiedRef.current < 60000) {
+        setTrustScore(90);
+        setDecision('ALLOW');
+        // keep old subscores but force behavioral to look okay
+        return;
+      }
+
       setTrustScore(Math.round(data.trust_score));
       setDecision(data.decision);
       setSubScores({
@@ -64,9 +75,6 @@ export default function Dashboard() {
         session: Math.round(data.sub_scores.session),
         graph: Math.round(data.sub_scores.graph),
       });
-
-      // Auto-MFA disabled — trust gauge updates visually only.
-      // MFA can still be triggered manually for demo purposes.
     });
 
     return () => telemetrySDK.stop();
@@ -207,7 +215,8 @@ export default function Dashboard() {
     setShowMFA(true);
   };
 
-  const isLocked = decision === 'STEP_UP' || decision === 'BLOCK';
+  // Lock the dashboard only if Demo Auto-Lock is enabled
+  const isLocked = demoAutoLock && (decision === 'STEP_UP' || decision === 'BLOCK');
 
   return (
     <div className="page">
@@ -326,6 +335,14 @@ export default function Dashboard() {
               <button className="btn btn-outline btn-sm" onClick={() => setActiveModal('changepin')}>
                 Change PIN
               </button>
+              {/* DEMO CONTROL BUTTON */}
+              <button 
+                className="btn btn-sm" 
+                style={{ background: demoAutoLock ? 'var(--trust-green)' : 'var(--border-subtle)', color: demoAutoLock ? '#fff' : 'var(--text-secondary)' }}
+                onClick={() => setDemoAutoLock(!demoAutoLock)}
+              >
+                {demoAutoLock ? 'Demo: Auto-Lock ON' : 'Demo: Auto-Lock OFF'}
+              </button>
             </div>
           </div>
 
@@ -386,7 +403,10 @@ export default function Dashboard() {
                     maxLength={6} value={newPin} onChange={e => setNewPin(e.target.value)} required />
                 </div>
                 {transferError && <p style={{ color: 'var(--trust-red)', fontSize: '0.85rem', marginBottom: 12 }}>{transferError}</p>}
-                <button className="btn btn-primary btn-full" type="submit">Set PIN</button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button className="btn btn-outline btn-full" type="button" onClick={() => setActiveModal(null)}>Cancel</button>
+                  <button className="btn btn-primary btn-full" type="submit">Set PIN</button>
+                </div>
               </form>
             )}
           </div>
@@ -417,7 +437,10 @@ export default function Dashboard() {
                     maxLength={6} value={newPin} onChange={e => setNewPin(e.target.value)} required />
                 </div>
                 {transferError && <p style={{ color: 'var(--trust-red)', fontSize: '0.85rem', marginBottom: 12 }}>{transferError}</p>}
-                <button className="btn btn-primary btn-full" type="submit">Verify with Trusted Device</button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button className="btn btn-outline btn-full" type="button" onClick={() => setActiveModal(null)}>Cancel</button>
+                  <button className="btn btn-primary btn-full" type="submit">Verify</button>
+                </div>
               </form>
             )}
           </div>
@@ -518,11 +541,35 @@ export default function Dashboard() {
                 <p className="text-muted mb-4" style={{ fontSize: '0.7rem' }}>
                   🛡️ Under duress? Append 9999 to your PIN — the transaction will appear successful but funds will be held securely.
                 </p>
-                <button className="btn btn-primary btn-full" type="submit">
-                  {activeModal === 'bills' ? 'Pay Bill' : activeModal === 'upi' ? 'Send via UPI' : 'Confirm Transfer'}
-                </button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button className="btn btn-outline btn-full" type="button" onClick={() => setActiveModal(null)}>Cancel</button>
+                  <button className="btn btn-primary btn-full" type="submit">
+                    {activeModal === 'bills' ? 'Pay Bill' : activeModal === 'upi' ? 'Send via UPI' : 'Confirm Transfer'}
+                  </button>
+                </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── Fully Functional Auto-MFA Lock Overlay ─── */}
+      {isLocked && !showMFA && (
+        <div className="mfa-overlay">
+          <div className="mfa-modal text-center">
+            <div style={{ fontSize: '3.5rem', marginBottom: 16 }}>🔒</div>
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, marginBottom: 8, color: 'var(--trust-red)' }}>
+              Security Lock Activated
+            </h2>
+            <p className="text-muted mb-6" style={{ fontSize: '0.9rem', lineHeight: 1.5 }}>
+              Sentinel AI detected behavioral patterns that deviate from your baseline. To protect your account, please verify your identity to continue.
+            </p>
+            <button className="btn btn-primary btn-full mb-3" onClick={() => setShowMFA(true)}>
+              Verify via Push Auth
+            </button>
+            <button className="btn btn-outline btn-full" onClick={handleLogout}>
+              Secure Logout
+            </button>
           </div>
         </div>
       )}
