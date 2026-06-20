@@ -202,8 +202,8 @@ async def login(req: LoginRequest, request: Request):
     """Login with username and password. Returns access + refresh token pair."""
     with get_db() as db:
         user = db.execute(
-            "SELECT id, username, email, password_hash, upi_pin_hash, balance FROM users WHERE username = %s OR phone_no = %s",
-            (req.username, req.username)
+            "SELECT id, username, email, password_hash, upi_pin_hash, balance FROM users WHERE username = %s OR phone_no = %s OR account_no = %s",
+            (req.username, req.username, req.username)
         ).fetchone()
 
         if not user:
@@ -252,7 +252,8 @@ async def login(req: LoginRequest, request: Request):
                 "id": user["id"],
                 "username": user["username"],
                 "email": user["email"],
-                "balance": user["balance"]
+                "balance": user["balance"],
+                "has_pin": bool(user["upi_pin_hash"])
             },
             "trust_score": 100,
             "message": "Login successful"
@@ -312,10 +313,11 @@ async def logout(req: LogoutRequest, user: dict = Depends(get_current_user)):
 async def get_me(user: dict = Depends(get_current_user)):
     """Return current authenticated user info."""
     with get_db() as db:
-        user_row = db.execute("SELECT email, balance FROM users WHERE id = %s", (user["user_id"],)).fetchone()
+        user_row = db.execute("SELECT email, balance, upi_pin_hash FROM users WHERE id = %s", (user["user_id"],)).fetchone()
         if user_row:
             user["email"] = user_row["email"]
             user["balance"] = user_row["balance"]
+            user["has_pin"] = bool(user_row["upi_pin_hash"])
     return user
 
 

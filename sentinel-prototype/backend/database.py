@@ -138,6 +138,17 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+
+
+        CREATE TABLE IF NOT EXISTS push_auth_challenges (
+            id TEXT PRIMARY KEY,
+            session_id TEXT,
+            user_id INTEGER,
+            correct_number INTEGER,
+            status TEXT DEFAULT 'PENDING',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
         
         CREATE TABLE IF NOT EXISTS bank_accounts (
             upi_id TEXT PRIMARY KEY,

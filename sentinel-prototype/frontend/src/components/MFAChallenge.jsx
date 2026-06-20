@@ -58,11 +58,10 @@ export default function MFAChallenge({ method = 'PUSH_AUTH', trustScore, onVerif
   // ── Push Auth ──────────────────────────────────────────────
   const startPushAuth = async () => {
     try {
-      const res = await mfaAPI.initiatePushAuth({
-        session_id: localStorage.getItem('sentinel_session'),
-      });
-      setPushNumber(res.data.correct_number);
-      setChallengeId(res.data.challenge_id);
+      // 100% FRONTEND FAKE FOR HACKATHON DEMO (No backend API dependency)
+      const fakeNumber = Math.floor(Math.random() * 90 + 10);
+      setPushNumber(fakeNumber);
+      setChallengeId(`FAKE_CHALLENGE_${Date.now()}`);
       setStep('push_waiting');
     } catch (err) {
       console.error('Push auth error:', err);
@@ -198,40 +197,64 @@ export default function MFAChallenge({ method = 'PUSH_AUTH', trustScore, onVerif
 
           {step === 'push_waiting' && (
             <div className="text-center">
+              <div className="spinner" style={{ margin: '0 auto 12px', width: 40, height: 40 }} />
               <p className="text-secondary mb-4">
-                Tap the matching number on your trusted device:
+                Waiting for you to approve the request on your trusted device...
               </p>
-              <div 
-                style={{
-                  fontSize: '3rem', fontWeight: 900,
-                  color: 'var(--primary)',
-                  padding: '24px',
-                  background: 'rgba(255, 107, 53, 0.08)',
-                  borderRadius: 'var(--radius-lg)',
-                  border: '2px solid var(--border-orange)',
-                  animation: 'pulse 2s infinite',
-                  cursor: 'pointer' // Added for hackathon demo
-                }}
-                onClick={async () => {
-                  try {
-                    // Simulate mobile device clicking the number
-                    await mfaAPI.verifyPushAuth({
-                      challenge_id: challengeId,
-                      selected_number: pushNumber
-                    });
-                    setStep('success');
-                    setTimeout(() => onVerified(challengeId), 1500);
-                  } catch (err) {
-                    setStep('failed');
-                  }
-                }}
-                title="Click to simulate mobile device verification (Hackathon Demo)"
-              >
-                {pushNumber}
-              </div>
-              <div className="flex items-center justify-center gap-2 mt-4">
-                <div className="spinner" />
-                <span className="text-secondary" style={{ fontSize: '0.85rem' }}>Waiting for response...</span>
+              
+              {/* FAKE MOBILE NOTIFICATION TOAST (FOR HACKATHON DEMO) */}
+              <div style={{
+                position: 'fixed',
+                top: '20px',
+                right: '20px',
+                width: '320px',
+                background: '#ffffff',
+                boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
+                borderRadius: '16px',
+                padding: '16px',
+                zIndex: 9999,
+                animation: 'slideInRight 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
+                border: '1px solid #e2e8f0',
+                textAlign: 'left'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                  <div style={{ width: '20px', height: '20px', background: '#4285F4', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '12px', fontWeight: 'bold', marginRight: '8px' }}>G</div>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#64748b' }}>Google Prompt</span>
+                  <span style={{ fontSize: '0.75rem', color: '#94a3b8', marginLeft: 'auto' }}>now</span>
+                </div>
+                <p style={{ fontSize: '0.95rem', fontWeight: 700, color: '#1e293b', marginBottom: '4px' }}>
+                  Are you trying to sign in?
+                </p>
+                <p style={{ fontSize: '0.85rem', color: '#475569', marginBottom: '16px' }}>
+                  Project Sentinel is trying to verify your identity. Tap the matching number:
+                </p>
+                
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                  {/* Generate 3 options, one being the correct one */}
+                  {[pushNumber - 13, pushNumber, pushNumber + 7].sort().map((num, i) => (
+                    <button 
+                      key={i}
+                      onClick={async () => {
+                        if (num === pushNumber) {
+                          // 100% FRONTEND FAKE: Instant success without API call!
+                          setStep('success');
+                          setTimeout(() => onVerified(challengeId), 1500);
+                        } else {
+                          setStep('failed');
+                        }
+                      }}
+                      style={{
+                        flex: 1, padding: '12px 0', fontSize: '1.2rem', fontWeight: 700,
+                        color: '#1e293b', background: '#f1f5f9', border: 'none',
+                        borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s'
+                      }}
+                      onMouseOver={(e) => e.currentTarget.style.background = '#e2e8f0'}
+                      onMouseOut={(e) => e.currentTarget.style.background = '#f1f5f9'}
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}

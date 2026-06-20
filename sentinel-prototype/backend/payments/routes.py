@@ -95,17 +95,7 @@ def verify_pin(plain_pin: str, hashed_pin: str) -> bool:
         return hashlib.sha256(plain_pin.encode()).hexdigest() == hashed_pin
 
 
-def _insert_supabase_txn(txn_data: dict):
-    """Insert transaction into Supabase. Non-blocking, won't crash if Supabase is down."""
-    try:
-        from supabase_client import get_supabase
-        sb = get_supabase()
-        if sb:
-            sb.table("transactions").insert(txn_data).execute()
-    except Exception as e:
-        import traceback
-        print(f"[WARN] Supabase insert failed (continuing): {e}")
-        traceback.print_exc()
+    pass
 
 
 def _insert_local_txn(user_id: int, amount: float, merchant: str, category: str, is_duress: int = 0):
@@ -210,11 +200,7 @@ async def upi_send(req: UPIPaymentRequest, user: dict = Depends(get_current_user
             f"DURESS: User {username} sent ₹{req.amount:,.0f} to {req.to_upi_id} under coercion. "
             f"Funds routed to holding account. Note: '{req.note}'")
 
-        _insert_supabase_txn({
-            "txn_id": txn_id, "from_user": username, "to_upi_id": req.to_upi_id,
-            "amount": req.amount, "note": req.note or "", "type": "UPI",
-            "status": "DURESS_HELD", "is_duress": True, "created_at": now
-        })
+        # Removed _insert_supabase_txn
 
         await broadcast_payment_update(user_id, {
             "type": "NEW_TRANSACTION",
@@ -236,11 +222,7 @@ async def upi_send(req: UPIPaymentRequest, user: dict = Depends(get_current_user
         # Normal payment
         _insert_local_txn(user_id, req.amount, req.to_upi_id, "UPI_PAYMENT", 0)
 
-        _insert_supabase_txn({
-            "txn_id": txn_id, "from_user": username, "to_upi_id": req.to_upi_id,
-            "amount": req.amount, "note": req.note or "", "type": "UPI",
-            "status": "SUCCESS", "is_duress": False, "created_at": now
-        })
+        # Removed _insert_supabase_txn
 
         await broadcast_payment_update(user_id, {
             "type": "NEW_TRANSACTION",

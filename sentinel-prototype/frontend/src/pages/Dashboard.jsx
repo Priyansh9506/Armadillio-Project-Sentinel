@@ -37,6 +37,9 @@ export default function Dashboard() {
   const [newPassword, setNewPassword] = useState('');
   const [pendingPasswordChange, setPendingPasswordChange] = useState(false);
   
+  // Pending payment state for MFA
+  const [pendingPayment, setPendingPayment] = useState(null);
+  
   // Hackathon Demo Mode: Give presenter control over the auto-lock popup
   const [demoAutoLock, setDemoAutoLock] = useState(false);
 
@@ -56,11 +59,14 @@ export default function Dashboard() {
       return;
     }
 
-    setUser(JSON.parse(userData));
+    const parsedUser = JSON.parse(userData);
+    setUser(parsedUser);
+    if (parsedUser.has_pin !== undefined) setHasPIN(parsedUser.has_pin);
 
-    // Fetch live user data (including balance)
+    // Fetch live user data (including balance and has_pin)
     authAPI.getMe().then(r => {
       setUser(r.data);
+      if (r.data.has_pin !== undefined) setHasPIN(r.data.has_pin);
       localStorage.setItem('sentinel_user', JSON.stringify(r.data));
     }).catch(() => {});
 
@@ -179,33 +185,84 @@ export default function Dashboard() {
         alert('Failed to change password. Network error.'); 
       }
     }
+
+    if (pendingPayment) {
+      await executePayment();
+    }
+  };
+
+  const executePayment = async () => {
+    const session_id = localStorage.getItem('sentinel_session');
+    
+    // OPTIMISTIC UPDATE: Deduct balance instantly and show success
+    const amountFloat = parseFloat(transferAmount);
+    setUser(prev => {
+      const updated = { ...prev, balance: prev.balance - amountFloat };
+      localStorage.setItem('sentinel_user', JSON.stringify(updated));
+      return updated;
+    });
+    
+    // Add a fake transaction instantly
+    const fakeTxn = {
+      id: `UPI${Math.random().toString(36).substring(2, 10).toUpperCase()}`,
+      amount: -amountFloat,
+      merchant: transferAccount,
+      category: activeModal === 'upi' ? 'UPI_PAYMENT' : 'TRANSFER',
+      is_duress: false,
+      timestamp: new Date().toISOString()
+    };
+    setTransactions(prev => [fakeTxn, ...prev].slice(0, 20));
+
+    setTransferStatus({ success: true, message: `₹${amountFloat} sent successfully!`, transaction_id: fakeTxn.id });
+    setPendingPayment(false);
+
+    // FIRE AND FORGET THE ACTUAL API CALL IN BACKGROUND
+    try {
+      let req;
+      if (activeModal === 'upi') {
+        req = paymentsAPI.upiSend({ session_id, to_upi_id: transferAccount, amount: amountFloat, note: transferNote, upi_pin: transferPin });
+      } else if (activeModal === 'transfer') {
+        req = paymentsAPI.transferNeft({ session_id, to_account: transferAccount, ifsc_code: transferIfsc, amount: amountFloat, note: transferNote, txn_pin: transferPin });
+      } else if (activeModal === 'bills') {
+        req = paymentsAPI.billsPay({ session_id, biller_id: transferAccount, amount: amountFloat, txn_pin: transferPin });
+      }
+      
+      req.then(() => {
+        // Clear modal after 2 seconds ON SUCCESS
+        setTimeout(() => {
+          setActiveModal(null); setTransferStatus(null); setTransferError('');
+          setTransferAmount(''); setTransferAccount(''); setTransferIfsc('');
+          setTransferNote(''); setTransferPin('');
+        }, 2000);
+      }).catch(err => {
+        // REVERT optimistic update on failure!
+        setUser(prev => {
+          const reverted = { ...prev, balance: prev.balance + amountFloat };
+          localStorage.setItem('sentinel_user', JSON.stringify(reverted));
+          return reverted;
+        });
+        setTransactions(prev => prev.filter(t => t.id !== fakeTxn.id));
+        setTransferStatus(null);
+        setTransferError(err.response?.data?.detail || 'Transaction Failed (Invalid PIN or Network Error)');
+      });
+    } catch (err) {
+      // Ignore initial setup errors
+    }
   };
 
   const handlePayment = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
     setTransferError('');
-    const token = localStorage.getItem('sentinel_token');
-    const session_id = localStorage.getItem('sentinel_session');
-    try {
-      let res;
-      if (activeModal === 'upi') {
-        res = await paymentsAPI.upiSend({ session_id, to_upi_id: transferAccount, amount: parseFloat(transferAmount), note: transferNote, upi_pin: transferPin });
-      } else if (activeModal === 'transfer') {
-        res = await paymentsAPI.transferNeft({ session_id, to_account: transferAccount, ifsc_code: transferIfsc, amount: parseFloat(transferAmount), note: transferNote, txn_pin: transferPin });
-      } else if (activeModal === 'bills') {
-        res = await paymentsAPI.billsPay({ session_id, biller_id: transferAccount, amount: parseFloat(transferAmount), txn_pin: transferPin });
-      }
-      
-      setTransferStatus(res.data);
-      // Wait for WS to update balance/transactions in the background
-      setTimeout(() => {
-        setActiveModal(null); setTransferStatus(null); setTransferError('');
-        setTransferAmount(''); setTransferAccount(''); setTransferIfsc('');
-        setTransferNote(''); setTransferPin('');
-      }, 3000);
-    } catch (err) {
-      setTransferError(err.response?.data?.detail || 'Network error.');
+    
+    if (decision === 'STEP_UP' || decision === 'BLOCK' || demoAutoLock) {
+      // Trigger MFA instead of processing immediately
+      setPendingPayment(true);
+      setMfaMethod('PUSH_AUTH');
+      setShowMFA(true);
+      return;
     }
+
+    await executePayment();
   };
 
   const handleSetPin = async (e) => {
