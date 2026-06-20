@@ -34,7 +34,7 @@ async def get_alerts(limit: int = Query(20, le=100), user: dict = Depends(get_cu
             FROM alerts a
             LEFT JOIN users u ON a.user_id = u.id
             ORDER BY a.timestamp DESC
-            LIMIT ?
+            LIMIT %s
         """, (limit,)).fetchall()
 
     res = []
@@ -52,15 +52,15 @@ async def get_trust_logs(user_id: int = None, limit: int = Query(50, le=200), us
         if user_id:
             logs = db.execute("""
                 SELECT * FROM trust_logs
-                WHERE user_id = ?
-                ORDER BY timestamp DESC LIMIT ?
+                WHERE user_id = %s
+                ORDER BY timestamp DESC LIMIT %s
             """, (user_id, limit)).fetchall()
         else:
             logs = db.execute("""
                 SELECT tl.*, u.username
                 FROM trust_logs tl
                 LEFT JOIN users u ON tl.user_id = u.id
-                ORDER BY tl.timestamp DESC LIMIT ?
+                ORDER BY tl.timestamp DESC LIMIT %s
             """, (limit,)).fetchall()
 
     res = []

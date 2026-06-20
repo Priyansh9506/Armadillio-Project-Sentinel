@@ -19,7 +19,7 @@ def compute_transaction_score(user_id: int, current_amount: float) -> float:
     """
     with get_db() as db:
         rows = db.execute(
-            "SELECT amount FROM transactions WHERE user_id = ? ORDER BY timestamp DESC LIMIT 50",
+            "SELECT amount FROM transactions WHERE user_id = %s ORDER BY timestamp DESC LIMIT 50",
             (user_id,)
         ).fetchall()
 
@@ -90,12 +90,12 @@ def compute_trust_score(
     # ── Fetch baseline ──
     with get_db() as db:
         baseline = db.execute(
-            "SELECT * FROM behavioral_baselines WHERE user_id = ?", (user_id,)
+            "SELECT * FROM behavioral_baselines WHERE user_id = %s", (user_id,)
         ).fetchone()
         baseline = dict(baseline) if baseline else {}
 
         known_fps = db.execute(
-            "SELECT device_fingerprint FROM sessions WHERE user_id = ? GROUP BY device_fingerprint",
+            "SELECT device_fingerprint FROM sessions WHERE user_id = %s GROUP BY device_fingerprint",
             (user_id,)
         ).fetchall()
         known_fps = [r["device_fingerprint"] for r in known_fps if r["device_fingerprint"]]
@@ -146,7 +146,7 @@ def compute_trust_score(
             INSERT INTO trust_logs
             (user_id, session_id, trust_score, behavioral_score, device_score,
              session_score, graph_score, transaction_score, geo_score, decision)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (user_id, session_id, composite, behavioral, device,
               session, graph, transaction, geo, decision))
 
@@ -154,7 +154,7 @@ def compute_trust_score(
         if decision == "BLOCK":
             db.execute("""
                 INSERT INTO alerts (user_id, alert_type, severity, description)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (user_id, "ATO_SUSPECTED", "CRITICAL",
                   f"Trust score dropped to {composite:.0f}. Decision: {decision}"))
 

@@ -21,14 +21,14 @@ def seed_demo_data():
         ]
 
         for username, email, password, role in users:
-            existing = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+            existing = db.execute("SELECT id FROM users WHERE username = %s", (username,)).fetchone()
             if existing:
                 print(f"  [SKIP] User '{username}' already exists, skipping.")
                 continue
 
             password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
             cursor = db.execute(
-                "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
+                "INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s)",
                 (username, email, password_hash)
             )
             user_id = cursor.lastrowid
@@ -40,11 +40,11 @@ def seed_demo_data():
                     INSERT INTO behavioral_baselines
                     (user_id, avg_flight_time, avg_dwell_time, avg_typing_speed,
                      avg_mouse_speed, std_flight_time, std_dwell_time, sample_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, (user_id, 120.5, 78.3, 5.2, 342.5, 28.9, 12.4, 50))
             else:
                 db.execute(
-                    "INSERT INTO behavioral_baselines (user_id) VALUES (?)",
+                    "INSERT INTO behavioral_baselines (user_id) VALUES (%s)",
                     (user_id,)
                 )
 
@@ -54,7 +54,7 @@ def seed_demo_data():
         priyansh = db.execute("SELECT id FROM users WHERE username = 'priyansh'").fetchone()
         if priyansh:
             uid = priyansh["id"]
-            existing_txns = db.execute("SELECT COUNT(*) as c FROM transactions WHERE user_id = ?", (uid,)).fetchone()
+            existing_txns = db.execute("SELECT COUNT(*) as c FROM transactions WHERE user_id = %s", (uid,)).fetchone()
             if existing_txns["c"] == 0:
                 transactions = [
                     (uid, -2000, "Swiggy", "FOOD"),
@@ -70,7 +70,7 @@ def seed_demo_data():
                 ]
                 for amount_data in transactions:
                     db.execute(
-                        "INSERT INTO transactions (user_id, amount, merchant, category) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO transactions (user_id, amount, merchant, category) VALUES (%s, %s, %s, %s)",
                         amount_data
                     )
                 print(f"  [OK] Seeded {len(transactions)} demo transactions")
@@ -86,7 +86,7 @@ def seed_demo_data():
             ]
             for alert_data in alerts:
                 db.execute(
-                    "INSERT INTO alerts (user_id, alert_type, severity, description) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO alerts (user_id, alert_type, severity, description) VALUES (%s, %s, %s, %s)",
                     alert_data
                 )
             print(f"  [OK] Seeded {len(alerts)} demo alerts")

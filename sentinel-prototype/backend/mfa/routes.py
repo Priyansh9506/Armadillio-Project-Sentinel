@@ -66,7 +66,7 @@ async def initiate_push_auth(req: PushAuthRequest, user: dict = Depends(get_curr
     with get_db() as db:
         db.execute("""
             INSERT INTO push_auth_challenges (id, session_id, user_id, correct_number, status)
-            VALUES (?, ?, ?, ?, 'PENDING')
+            VALUES (%s, %s, %s, %s, 'PENDING')
         """, (challenge_id, req.session_id, user_id, correct_number))
 
     # Send to trusted device via WebSocket
@@ -97,7 +97,7 @@ async def verify_push_auth(req: PushAuthVerify, user: dict = Depends(get_current
 
     with get_db() as db:
         challenge = db.execute(
-            "SELECT * FROM push_auth_challenges WHERE id = ? AND user_id = ?",
+            "SELECT * FROM push_auth_challenges WHERE id = %s AND user_id = %s",
             (req.challenge_id, user_id)
         ).fetchone()
 
@@ -109,7 +109,7 @@ async def verify_push_auth(req: PushAuthVerify, user: dict = Depends(get_current
 
         if req.selected_number == challenge["correct_number"]:
             db.execute(
-                "UPDATE push_auth_challenges SET status = 'VERIFIED' WHERE id = ?",
+                "UPDATE push_auth_challenges SET status = 'VERIFIED' WHERE id = %s",
                 (req.challenge_id,)
             )
 
@@ -125,7 +125,7 @@ async def verify_push_auth(req: PushAuthVerify, user: dict = Depends(get_current
             return {"verified": True, "message": "Identity verified successfully"}
         else:
             db.execute(
-                "UPDATE push_auth_challenges SET status = 'FAILED' WHERE id = ?",
+                "UPDATE push_auth_challenges SET status = 'FAILED' WHERE id = %s",
                 (req.challenge_id,)
             )
             return {"verified": False, "message": "Incorrect number selected"}
@@ -183,13 +183,13 @@ async def duress_transfer(req: DuressTransferRequest, user: dict = Depends(get_c
             # ── DURESS MODE ──
             db.execute("""
                 INSERT INTO transactions (user_id, amount, merchant, category, is_duress)
-                VALUES (?, ?, ?, ?, 1)
+                VALUES (%s, %s, %s, %s, 1)
             """, (user_id, req.amount, f"HELD_FOR_{req.to_account}", "DURESS_HOLD"))
 
             # Trigger CRITICAL silent alarm
             db.execute("""
                 INSERT INTO alerts (user_id, alert_type, severity, description)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (user_id, "DURESS_TRANSFER", "CRITICAL",
                   f"DURESS ALERT: User {username} attempted transfer of ₹{req.amount:,.0f} "
                   f"to {req.to_account} under coercion. Funds held in secure account. "
@@ -205,7 +205,7 @@ async def duress_transfer(req: DuressTransferRequest, user: dict = Depends(get_c
             # Normal transfer
             db.execute("""
                 INSERT INTO transactions (user_id, amount, merchant, category)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (user_id, req.amount, req.to_account, "TRANSFER"))
 
             return {
@@ -240,14 +240,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
 
                 with get_db() as db:
                     challenge = db.execute(
-                        "SELECT * FROM push_auth_challenges WHERE id = ?",
+                        "SELECT * FROM push_auth_challenges WHERE id = %s",
                         (challenge_id,)
                     ).fetchone()
 
                     if challenge and challenge["status"] == "PENDING":
                         if selected == challenge["correct_number"]:
                             db.execute(
-                                "UPDATE push_auth_challenges SET status = 'VERIFIED' WHERE id = ?",
+                                "UPDATE push_auth_challenges SET status = 'VERIFIED' WHERE id = %s",
                                 (challenge_id,)
                             )
                             for ws in active_connections.get(user_id, []):
@@ -260,7 +260,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: int):
                                     pass
                         else:
                             db.execute(
-                                "UPDATE push_auth_challenges SET status = 'FAILED' WHERE id = ?",
+                                "UPDATE push_auth_challenges SET status = 'FAILED' WHERE id = %s",
                                 (challenge_id,)
                             )
                             await websocket.send_text(json.dumps({

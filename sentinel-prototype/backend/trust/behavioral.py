@@ -51,7 +51,7 @@ def update_baseline(user_id: int, metrics: dict, db_conn) -> None:
     Uses exponential moving average to smooth the baseline over time.
     """
     baseline = db_conn.execute(
-        "SELECT * FROM behavioral_baselines WHERE user_id = ?", (user_id,)
+        "SELECT * FROM behavioral_baselines WHERE user_id = %s", (user_id,)
     ).fetchone()
 
     if not baseline:
@@ -79,13 +79,13 @@ def update_baseline(user_id: int, metrics: dict, db_conn) -> None:
 
     db_conn.execute("""
         UPDATE behavioral_baselines SET
-            avg_flight_time = ?,
-            avg_dwell_time = ?,
-            avg_typing_speed = ?,
-            std_flight_time = ?,
-            std_dwell_time = ?,
-            sample_count = ?
-        WHERE user_id = ?
+            avg_flight_time = %s,
+            avg_dwell_time = %s,
+            avg_typing_speed = %s,
+            std_flight_time = %s,
+            std_dwell_time = %s,
+            sample_count = %s
+        WHERE user_id = %s
     """, (new_avg_flight, new_avg_dwell, new_avg_speed,
           new_std_flight, new_std_dwell, sample_count + 1, user_id))
 

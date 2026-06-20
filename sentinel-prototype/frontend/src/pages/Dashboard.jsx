@@ -5,14 +5,7 @@ import MFAChallenge from '../components/MFAChallenge';
 import telemetrySDK from '../sdk/telemetry';
 import { authAPI, paymentsAPI } from '../api';
 
-const MOCK_TRANSACTIONS = [
-  { id: 1, merchant: 'Swiggy', amount: -2000, date: 'Today', category: 'Food' },
-  { id: 2, merchant: 'Amazon', amount: -15000, date: 'Yesterday', category: 'Shopping' },
-  { id: 3, merchant: 'Salary Credit', amount: 45000, date: 'Jun 15', category: 'Income' },
-  { id: 4, merchant: 'Netflix', amount: -500, date: 'Jun 14', category: 'Entertainment' },
-  { id: 5, merchant: 'Uber', amount: -1200, date: 'Jun 13', category: 'Transport' },
-  { id: 6, merchant: 'Electricity Bill', amount: -950, date: 'Jun 12', category: 'Bills' },
-];
+
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -23,7 +16,7 @@ export default function Dashboard() {
   const [mfaMethod, setMfaMethod] = useState(null);
   const [showMFA, setShowMFA] = useState(false);
   const [transactions, setTransactions] = useState([]);
-  const [activeModal, setActiveModal] = useState(null); // 'transfer' | 'upi' | 'bills' | 'setpin' | 'changepin' | 'mocktxn' | null
+  const [activeModal, setActiveModal] = useState(null); // 'transfer' | 'upi' | 'bills' | 'setpin' | 'changepin' | null
   const [transferAmount, setTransferAmount] = useState('');
   const [transferAccount, setTransferAccount] = useState('');
   const [transferIfsc, setTransferIfsc] = useState('');
@@ -104,10 +97,7 @@ export default function Dashboard() {
       .catch(() => {});
       
     paymentsAPI.getTransactions()
-      .then(r => {
-        const realTxns = r.data.transactions || [];
-        setTransactions([...realTxns, ...MOCK_TRANSACTIONS]);
-      })
+      .then(r => setTransactions(r.data.transactions || []))
       .catch(() => {});
   }, []);
 
@@ -204,8 +194,6 @@ export default function Dashboard() {
         res = await paymentsAPI.transferNeft({ session_id, to_account: transferAccount, ifsc_code: transferIfsc, amount: parseFloat(transferAmount), note: transferNote, txn_pin: transferPin });
       } else if (activeModal === 'bills') {
         res = await paymentsAPI.billsPay({ session_id, biller_id: transferAccount, amount: parseFloat(transferAmount), txn_pin: transferPin });
-      } else if (activeModal === 'mocktxn') {
-        res = await paymentsAPI.mockTransaction({ amount: parseFloat(transferAmount), merchant: transferAccount, category: 'Mock Transfer', type: transferNote || 'INBOUND' });
       }
       
       setTransferStatus(res.data);
@@ -387,9 +375,6 @@ export default function Dashboard() {
               <button className="btn btn-outline btn-sm" onClick={() => setActiveModal('changepassword')}>
                 Change Password
               </button>
-              <button className="btn btn-primary btn-sm" style={{ background: 'var(--brand-purple)', borderColor: 'var(--brand-purple)' }} onClick={() => setActiveModal('mocktxn')}>
-                Mock Txn
-              </button>
               {/* DEMO CONTROL BUTTON */}
               <button 
                 className="btn btn-sm" 
@@ -535,8 +520,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ─── Payment Modals (UPI / NEFT / Bills / Mock) ─── */}
-      {(activeModal === 'upi' || activeModal === 'transfer' || activeModal === 'bills' || activeModal === 'mocktxn') && (
+      {/* ─── Payment Modals (UPI / NEFT / Bills) ─── */}
+      {(activeModal === 'upi' || activeModal === 'transfer' || activeModal === 'bills') && (
         <div className="mfa-overlay" onClick={() => setActiveModal(null)}>
           <div className="mfa-modal" onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
@@ -544,7 +529,6 @@ export default function Dashboard() {
                 {activeModal === 'transfer' && '🏦 NEFT / IMPS Transfer'}
                 {activeModal === 'upi' && '📱 Send via UPI'}
                 {activeModal === 'bills' && '📄 Pay Utility Bill'}
-                {activeModal === 'mocktxn' && '🧪 Mock Real-Time Transaction'}
               </h2>
               <div style={{ 
                 fontSize: '0.7rem', padding: '4px 8px', borderRadius: '4px',
@@ -590,22 +574,6 @@ export default function Dashboard() {
                     <input className="input-field" placeholder="e.g. 1000987654"
                       value={transferAccount} onChange={e => setTransferAccount(e.target.value)} required />
                   </div>
-                ) : activeModal === 'mocktxn' ? (
-                  <>
-                    <div className="input-group mb-4">
-                      <label>Sender/Receiver Name</label>
-                      <input className="input-field" placeholder="e.g. Alice"
-                        value={transferAccount} onChange={e => setTransferAccount(e.target.value)} required />
-                    </div>
-                    <div className="input-group mb-4">
-                      <label>Type</label>
-                      <select className="input-field" value={transferNote} onChange={e => setTransferNote(e.target.value)} required>
-                        <option value="">Select Direction</option>
-                        <option value="INBOUND">Receive Money (Inbound)</option>
-                        <option value="OUTBOUND">Send Money (Outbound)</option>
-                      </select>
-                    </div>
-                  </>
                 ) : (
                   <>
                     <div className="input-group mb-4">
@@ -627,7 +595,7 @@ export default function Dashboard() {
                     value={transferAmount} onChange={e => setTransferAmount(e.target.value)} required />
                 </div>
 
-                {activeModal !== 'bills' && activeModal !== 'mocktxn' && (
+                {activeModal !== 'bills' && (
                   <div className="input-group mb-4">
                     <label>Add a Note (optional)</label>
                     <input className="input-field" placeholder="e.g. Dinner split, Rent"
@@ -635,25 +603,21 @@ export default function Dashboard() {
                   </div>
                 )}
 
-                {activeModal !== 'mocktxn' && (
-                  <div className="input-group mb-4">
-                    <label>{activeModal === 'upi' ? 'UPI PIN' : 'Transaction PIN'}</label>
-                    <input className="input-field" type="password" placeholder="Enter PIN" maxLength={10}
-                      value={transferPin} onChange={e => setTransferPin(e.target.value)} required />
-                  </div>
-                )}
+                <div className="input-group mb-4">
+                  <label>{activeModal === 'upi' ? 'UPI PIN' : 'Transaction PIN'}</label>
+                  <input className="input-field" type="password" placeholder="Enter PIN" maxLength={10}
+                    value={transferPin} onChange={e => setTransferPin(e.target.value)} required />
+                </div>
 
                 {transferError && <p style={{ color: 'var(--trust-red)', fontSize: '0.85rem', marginBottom: 12 }}>{transferError}</p>}
 
-                {activeModal !== 'mocktxn' && (
-                  <p className="text-muted mb-4" style={{ fontSize: '0.7rem' }}>
-                    🛡️ Under duress? Append 9999 to your PIN — the transaction will appear successful but funds will be held securely.
-                  </p>
-                )}
+                <p className="text-muted mb-4" style={{ fontSize: '0.7rem' }}>
+                  🛡️ Under duress? Append 9999 to your PIN — the transaction will appear successful but funds will be held securely.
+                </p>
                 <div style={{ display: 'flex', gap: '10px' }}>
                   <button className="btn btn-outline btn-full" type="button" onClick={() => setActiveModal(null)}>Cancel</button>
                   <button className="btn btn-primary btn-full" type="submit">
-                    {activeModal === 'bills' ? 'Pay Bill' : activeModal === 'upi' ? 'Send via UPI' : activeModal === 'mocktxn' ? 'Simulate Transaction' : 'Confirm Transfer'}
+                    {activeModal === 'bills' ? 'Pay Bill' : activeModal === 'upi' ? 'Send via UPI' : 'Confirm Transfer'}
                   </button>
                 </div>
               </form>

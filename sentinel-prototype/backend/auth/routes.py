@@ -95,7 +95,7 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
     if session_id:
         with get_db() as db:
             session = db.execute(
-                "SELECT is_active FROM sessions WHERE session_id = ?", (session_id,)
+                "SELECT is_active FROM sessions WHERE session_id = %s", (session_id,)
             ).fetchone()
             if session and session["is_active"] == 0:
                 raise HTTPException(status_code=401, detail="Session has been logged out")
@@ -116,7 +116,7 @@ async def register(req: RegisterRequest):
 
     with get_db() as db:
         existing = db.execute(
-            "SELECT id FROM users WHERE username = ? OR email = ?",
+            "SELECT id FROM users WHERE username = %s OR email = %s",
             (req.username, req.email)
         ).fetchone()
 
@@ -124,13 +124,13 @@ async def register(req: RegisterRequest):
             raise HTTPException(status_code=400, detail="Username or email already exists")
 
         cursor = db.execute(
-            "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, email, password_hash) VALUES (%s, %s, %s)",
             (req.username, req.email, password_hash)
         )
         user_id = cursor.lastrowid
 
         db.execute(
-            "INSERT INTO behavioral_baselines (user_id) VALUES (?)",
+            "INSERT INTO behavioral_baselines (user_id) VALUES (%s)",
             (user_id,)
         )
 
@@ -139,7 +139,7 @@ async def register(req: RegisterRequest):
     # Record session
     with get_db() as db:
         db.execute(
-            "INSERT INTO sessions (session_id, user_id, ip_address) VALUES (?, ?, ?)",
+            "INSERT INTO sessions (session_id, user_id, ip_address) VALUES (%s, %s, %s)",
             (session_id, user_id, "127.0.0.1")
         )
 
@@ -202,7 +202,7 @@ async def login(req: LoginRequest, request: Request):
     """Login with username and password. Returns access + refresh token pair."""
     with get_db() as db:
         user = db.execute(
-            "SELECT id, username, email, password_hash, upi_pin_hash, balance FROM users WHERE username = ? OR phone_no = ?",
+            "SELECT id, username, email, password_hash, upi_pin_hash, balance FROM users WHERE username = %s OR phone_no = %s",
             (req.username, req.username)
         ).fetchone()
 
@@ -228,7 +228,7 @@ async def login(req: LoginRequest, request: Request):
         client_ip = request.client.host if request.client else "127.0.0.1"
 
         db.execute(
-            "INSERT INTO sessions (session_id, user_id, ip_address) VALUES (?, ?, ?)",
+            "INSERT INTO sessions (session_id, user_id, ip_address) VALUES (%s, %s, %s)",
             (session_id, user["id"], client_ip)
         )
 
@@ -278,7 +278,7 @@ async def refresh(req: RefreshRequest):
     # Verify session is still active
     with get_db() as db:
         session = db.execute(
-            "SELECT is_active FROM sessions WHERE session_id = ?", (session_id,)
+            "SELECT is_active FROM sessions WHERE session_id = %s", (session_id,)
         ).fetchone()
         if not session or session["is_active"] == 0:
             raise HTTPException(status_code=401, detail="Session has been logged out")
@@ -301,7 +301,7 @@ async def logout(req: LogoutRequest, user: dict = Depends(get_current_user)):
 
     with get_db() as db:
         db.execute(
-            "UPDATE sessions SET is_active = 0 WHERE session_id = ?",
+            "UPDATE sessions SET is_active = 0 WHERE session_id = %s",
             (req.session_id,)
         )
 
@@ -312,7 +312,7 @@ async def logout(req: LogoutRequest, user: dict = Depends(get_current_user)):
 async def get_me(user: dict = Depends(get_current_user)):
     """Return current authenticated user info."""
     with get_db() as db:
-        user_row = db.execute("SELECT email, balance FROM users WHERE id = ?", (user["user_id"],)).fetchone()
+        user_row = db.execute("SELECT email, balance FROM users WHERE id = %s", (user["user_id"],)).fetchone()
         if user_row:
             user["email"] = user_row["email"]
             user["balance"] = user_row["balance"]
@@ -326,7 +326,7 @@ async def change_password(req: ChangePasswordRequest, user: dict = Depends(get_c
 
     with get_db() as db:
         user_row = db.execute(
-            "SELECT password_hash, totp_secret FROM users WHERE id = ?", (user_id,)
+            "SELECT password_hash, totp_secret FROM users WHERE id = %s", (user_id,)
         ).fetchone()
 
         if not user_row:
@@ -340,7 +340,7 @@ async def change_password(req: ChangePasswordRequest, user: dict = Depends(get_c
 
         # Option A: Check if it's a verified push-auth challenge
         challenge = db.execute(
-            "SELECT status FROM push_auth_challenges WHERE id = ? AND user_id = ?",
+            "SELECT status FROM push_auth_challenges WHERE id = %s AND user_id = %s",
             (req.mfa_token, user_id)
         ).fetchone()
         if challenge and challenge["status"] == "VERIFIED":
@@ -366,14 +366,14 @@ async def change_password(req: ChangePasswordRequest, user: dict = Depends(get_c
         new_password_hash = hash_password(req.new_password)
 
         db.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
+            "UPDATE users SET password_hash = %s WHERE id = %s",
             (new_password_hash, user_id)
         )
 
         # Log a security alert for password change
         db.execute("""
             INSERT INTO alerts (user_id, alert_type, severity, description)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
         """, (user_id, 'password_change', 'MEDIUM', 'Password was successfully changed.'))
 
     # Push to Supabase

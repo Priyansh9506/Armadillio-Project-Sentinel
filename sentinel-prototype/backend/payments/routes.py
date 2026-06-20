@@ -113,7 +113,7 @@ def _insert_local_txn(user_id: int, amount: float, merchant: str, category: str,
     with get_db() as db:
         db.execute("""
             INSERT INTO transactions (user_id, amount, merchant, category, is_duress)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
         """, (user_id, amount, merchant, category, is_duress))
 
 
@@ -122,7 +122,7 @@ def _insert_alert(user_id: int, alert_type: str, severity: str, description: str
     with get_db() as db:
         db.execute("""
             INSERT INTO alerts (user_id, alert_type, severity, description)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
         """, (user_id, alert_type, severity, description))
 
 
@@ -139,7 +139,7 @@ async def set_upi_pin(req: SetUPIPinRequest, user: dict = Depends(get_current_us
 
     with get_db() as db:
         # Check if PIN already set and verify phone number
-        user_row = db.execute("SELECT upi_pin_hash, phone_no FROM users WHERE id = ?", (user_id,)).fetchone()
+        user_row = db.execute("SELECT upi_pin_hash, phone_no FROM users WHERE id = %s", (user_id,)).fetchone()
         
         if not user_row:
             raise HTTPException(status_code=404, detail="User not found")
@@ -150,7 +150,7 @@ async def set_upi_pin(req: SetUPIPinRequest, user: dict = Depends(get_current_us
         if user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="UPI PIN already set. Use change-pin endpoint.")
 
-        db.execute("UPDATE users SET upi_pin_hash = ? WHERE id = ?", (pin_hash, user_id))
+        db.execute("UPDATE users SET upi_pin_hash = %s WHERE id = %s", (pin_hash, user_id))
 
     try:
         from supabase_client import get_supabase
@@ -180,8 +180,8 @@ async def upi_send(req: UPIPaymentRequest, user: dict = Depends(get_current_user
     # Verify UPI PIN
     with get_db() as db:
         # Fetch user details and their ACID balance
-        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = %s", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = %s", (user_id,)).fetchone()
         
         if not user_row or not user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="UPI PIN not set. Please set your PIN first.")
@@ -198,7 +198,7 @@ async def upi_send(req: UPIPaymentRequest, user: dict = Depends(get_current_user
             raise HTTPException(status_code=401, detail="Incorrect UPI PIN")
             
         new_balance = current_balance - req.amount
-        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        db.execute("UPDATE account_balances SET balance = %s WHERE user_id = %s", (new_balance, user_id))
 
     txn_id = f"UPI{uuid.uuid4().hex[:10].upper()}"
     now = datetime.utcnow().isoformat()
@@ -272,8 +272,8 @@ async def neft_transfer(req: BankTransferRequest, user: dict = Depends(get_curre
         raise HTTPException(status_code=400, detail="Amount must be positive")
 
     with get_db() as db:
-        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = %s", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = %s", (user_id,)).fetchone()
         
         if not user_row or not user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="Transaction PIN not set.")
@@ -289,7 +289,7 @@ async def neft_transfer(req: BankTransferRequest, user: dict = Depends(get_curre
             raise HTTPException(status_code=401, detail="Incorrect Transaction PIN")
             
         new_balance = current_balance - req.amount
-        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        db.execute("UPDATE account_balances SET balance = %s WHERE user_id = %s", (new_balance, user_id))
 
     txn_id = f"NEFT{uuid.uuid4().hex[:10].upper()}"
     now = datetime.utcnow().isoformat()
@@ -349,8 +349,8 @@ async def pay_bill(req: BillPayRequest, user: dict = Depends(get_current_user)):
     username = user["username"]
 
     with get_db() as db:
-        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = %s", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = %s", (user_id,)).fetchone()
         
         if not user_row or not user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="Transaction PIN not set.")
@@ -366,7 +366,7 @@ async def pay_bill(req: BillPayRequest, user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=401, detail="Incorrect Transaction PIN")
             
         new_balance = current_balance - req.amount
-        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        db.execute("UPDATE account_balances SET balance = %s WHERE user_id = %s", (new_balance, user_id))
 
     txn_id = f"BILL{uuid.uuid4().hex[:10].upper()}"
     now = datetime.utcnow().isoformat()
@@ -418,7 +418,7 @@ async def change_upi_pin(req: ChangeUPIPinRequest, user: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail="New PIN must be different from old PIN")
 
     with get_db() as db:
-        row = db.execute("SELECT upi_pin_hash, totp_secret FROM users WHERE id = ?", (user_id,)).fetchone()
+        row = db.execute("SELECT upi_pin_hash, totp_secret FROM users WHERE id = %s", (user_id,)).fetchone()
         if not row or not row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="UPI PIN not set yet. Use set-pin first.")
 
@@ -431,7 +431,7 @@ async def change_upi_pin(req: ChangeUPIPinRequest, user: dict = Depends(get_curr
 
         # Option A: Check if it's a verified push-auth challenge
         challenge = db.execute(
-            "SELECT status FROM push_auth_challenges WHERE id = ? AND user_id = ?",
+            "SELECT status FROM push_auth_challenges WHERE id = %s AND user_id = %s",
             (req.mfa_token, user_id)
         ).fetchone()
         if challenge and challenge["status"] == "VERIFIED":
@@ -452,12 +452,12 @@ async def change_upi_pin(req: ChangeUPIPinRequest, user: dict = Depends(get_curr
 
         # Step 3: Update PIN
         new_hash = hash_pin(req.new_pin)
-        db.execute("UPDATE users SET upi_pin_hash = ? WHERE id = ?", (new_hash, user_id))
+        db.execute("UPDATE users SET upi_pin_hash = %s WHERE id = %s", (new_hash, user_id))
 
         # Log the PIN change
         db.execute("""
             INSERT INTO alerts (user_id, alert_type, severity, description)
-            VALUES (?, 'UPI_PIN_CHANGED', 'INFO', ?)
+            VALUES (%s, 'UPI_PIN_CHANGED', 'INFO', %s)
         """, (user_id, f"UPI PIN changed successfully via MFA for user {user['username']}"))
 
     try:
@@ -484,7 +484,7 @@ async def get_transactions(user: dict = Depends(get_current_user)):
     with get_db() as db:
         rows = db.execute("""
             SELECT id, amount, merchant, category, is_duress, timestamp
-            FROM transactions WHERE user_id = ?
+            FROM transactions WHERE user_id = %s
             ORDER BY timestamp DESC LIMIT 20
         """, (user_id,)).fetchall()
 
@@ -508,7 +508,7 @@ async def pin_status(user: dict = Depends(get_current_user)):
     user_id = user["user_id"]
 
     with get_db() as db:
-        row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+        row = db.execute("SELECT upi_pin_hash FROM users WHERE id = %s", (user_id,)).fetchone()
 
     has_pin = bool(row and row["upi_pin_hash"])
     return {"has_pin": has_pin}
@@ -525,21 +525,21 @@ async def mock_transaction(req: MockTransactionRequest, user: dict = Depends(get
         amount = -amount
 
     with get_db() as db:
-        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = %s", (user_id,)).fetchone()
         current_balance = balance_row["balance"] if balance_row else 0.0
         
         if req.type == "OUTBOUND" and abs(amount) > current_balance:
             raise HTTPException(status_code=400, detail="Insufficient balance for mock outbound")
 
         new_balance = current_balance + amount
-        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        db.execute("UPDATE account_balances SET balance = %s WHERE user_id = %s", (new_balance, user_id))
         
         db.execute("""
             INSERT INTO transactions (user_id, amount, merchant, category, is_duress)
-            VALUES (?, ?, ?, ?, 0)
+            VALUES (%s, %s, %s, %s, 0)
         """, (user_id, amount, req.merchant, req.category))
         
-        txn_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        txn_id = db.execute("SELECT LASTVAL()").fetchone()[0]
 
     now = datetime.utcnow().isoformat()
     
@@ -563,7 +563,7 @@ async def get_transaction_details(txn_id: int, user: dict = Depends(get_current_
     with get_db() as db:
         txn = db.execute("""
             SELECT id, amount, merchant, category, is_duress, timestamp
-            FROM transactions WHERE id = ? AND user_id = ?
+            FROM transactions WHERE id = %s AND user_id = %s
         """, (txn_id, user_id)).fetchone()
         
     if not txn:
@@ -583,7 +583,7 @@ async def payment_websocket(websocket: WebSocket, user_id: int):
     
     # Send initial balance on connection
     with get_db() as db:
-        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = %s", (user_id,)).fetchone()
         current_balance = balance_row["balance"] if balance_row else 0.0
     
     await websocket.send_text(json.dumps({

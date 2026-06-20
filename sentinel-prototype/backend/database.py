@@ -1,21 +1,51 @@
 """
-Project Sentinel — SQLite Database Setup
-Creates all tables and provides a connection helper.
+Project Sentinel — Postgres Database Setup
+Connects to Supabase Postgres.
 """
-import sqlite3
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
-from config import DB_PATH
+from dotenv import load_dotenv
 
+from config import BASE_DIR
+
+load_dotenv(BASE_DIR / ".env")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+class PostgresDBWrapper:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, sql, parameters=None):
+        cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+        if parameters:
+            cursor.execute(sql, parameters)
+        else:
+            cursor.execute(sql)
+        return cursor
+        
+    def commit(self):
+        self.conn.commit()
+        
+    def rollback(self):
+        self.conn.rollback()
+
+    def close(self):
+        self.conn.close()
 
 def init_db():
     """Create all tables if they don't exist."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    if not DATABASE_URL:
+        print("[WARN] DATABASE_URL not set!")
+        return
+
+    conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
 
-    cursor.executescript("""
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
@@ -26,6 +56,7 @@ def init_db():
             upi_id TEXT,
             phone_no TEXT,
             balance REAL DEFAULT 100000.0,
+            has_pin BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -49,7 +80,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS trust_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER,
             session_id TEXT,
             trust_score REAL,
@@ -65,7 +96,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER,
             alert_type TEXT,
             severity TEXT,
@@ -88,7 +119,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id INTEGER,
             amount REAL,
             merchant TEXT,
@@ -107,27 +138,33 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+        
+        CREATE TABLE IF NOT EXISTS bank_accounts (
+            upi_id TEXT PRIMARY KEY,
+            account_no TEXT UNIQUE,
+            name_of_customer TEXT,
+            balance REAL DEFAULT 0.0
+        );
     """)
 
     conn.commit()
     conn.close()
-    print("[OK] Database initialized at:", DB_PATH)
+    print("[OK] Database initialized at Supabase PostgreSQL")
 
 
 @contextmanager
 def get_db():
     """Context manager for database connections."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL)
+    db_wrapper = PostgresDBWrapper(conn)
     try:
-        yield conn
-        conn.commit()
+        yield db_wrapper
+        db_wrapper.commit()
     except Exception:
-        conn.rollback()
+        db_wrapper.rollback()
         raise
     finally:
-        conn.close()
-
+        db_wrapper.close()
 
 if __name__ == "__main__":
     init_db()

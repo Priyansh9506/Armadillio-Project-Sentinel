@@ -13,7 +13,7 @@ def run_migration():
         
         # Set a default pin (1234) for existing users
         default_hash = bcrypt.hashpw(b"1234", bcrypt.gensalt()).decode()
-        c.execute("UPDATE users SET upi_pin_hash = ?", (default_hash,))
+        c.execute("UPDATE users SET upi_pin_hash = %s", (default_hash,))
         conn.commit()
         print("Default PIN 1234 set for all existing users.")
     except sqlite3.OperationalError as e:

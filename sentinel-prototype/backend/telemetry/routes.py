@@ -37,7 +37,7 @@ async def ingest_telemetry(payload: TelemetryPayload, user: dict = Depends(get_c
     # Validate session belongs to this user and is active
     with get_db() as db:
         session = db.execute(
-            "SELECT * FROM sessions WHERE session_id = ? AND user_id = ?",
+            "SELECT * FROM sessions WHERE session_id = %s AND user_id = %s",
             (session_id, user_id)
         ).fetchone()
 
@@ -58,14 +58,14 @@ async def ingest_telemetry(payload: TelemetryPayload, user: dict = Depends(get_c
 
         # Update last_activity timestamp
         db.execute(
-            "UPDATE sessions SET last_activity = CURRENT_TIMESTAMP WHERE session_id = ?",
+            "UPDATE sessions SET last_activity = CURRENT_TIMESTAMP WHERE session_id = %s",
             (session_id,)
         )
 
         # Count telemetry events in last minute for request rate
         one_minute_ago = (datetime.now(timezone.utc) - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
         rate_row = db.execute(
-            "SELECT COUNT(*) as c FROM trust_logs WHERE session_id = ? AND timestamp >= ?",
+            "SELECT COUNT(*) as c FROM trust_logs WHERE session_id = %s AND timestamp >= %s",
             (session_id, one_minute_ago)
         ).fetchone()
         requests_per_minute = rate_row["c"] if rate_row else 0
