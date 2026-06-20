@@ -7,7 +7,9 @@ import uuid
 import hashlib
 import secrets
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends
+import json
+import asyncio
+from fastapi import APIRouter, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from typing import Optional
 
@@ -17,11 +19,25 @@ from config import DURESS_PIN_SUFFIX
 
 router = APIRouter()
 
+# In-memory store for active WebSocket connections for payments
+payment_connections: dict[int, list[WebSocket]] = {}
+
+async def broadcast_payment_update(user_id: int, message: dict):
+    """Broadcast an update to all connected WebSocket clients for a user."""
+    if user_id in payment_connections:
+        msg_str = json.dumps(message)
+        for ws in payment_connections[user_id]:
+            try:
+                await ws.send_text(msg_str)
+            except Exception:
+                pass
+
 
 # ─── Pydantic Models ────────────────────────────────────────────────
 
 class SetUPIPinRequest(BaseModel):
     new_pin: str  # 4 or 6 digit
+    phone_no: str
 
 class UPIPaymentRequest(BaseModel):
     session_id: str
@@ -49,17 +65,34 @@ class ChangeUPIPinRequest(BaseModel):
     new_pin: str
     mfa_token: str  # challenge_id from push-auth or TOTP code
 
+class MockTransactionRequest(BaseModel):
+    amount: float
+    merchant: str
+    category: str
+    type: str # INBOUND or OUTBOUND
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────
 
-def hash_pin(pin: str) -> str:
-    """SHA-256 hash for UPI PIN storage."""
-    return hashlib.sha256(pin.encode()).hexdigest()
+import os
+import bcrypt
 
+def get_pepper() -> bytes:
+    return os.getenv("PIN_PEPPER", "default_secret_pepper").encode()
+
+def hash_pin(pin: str) -> str:
+    """Bcrypt hash with system-wide Pepper (Salt + Pepper) for UPI PIN storage."""
+    peppered_pin = pin.encode() + get_pepper()
+    return bcrypt.hashpw(peppered_pin, bcrypt.gensalt()).decode('utf-8')
 
 def verify_pin(plain_pin: str, hashed_pin: str) -> bool:
-    """Verify a plain PIN against stored hash."""
-    return hash_pin(plain_pin) == hashed_pin
+    """Verify PIN against the Salted & Peppered Bcrypt hash."""
+    peppered_pin = plain_pin.encode() + get_pepper()
+    try:
+        return bcrypt.checkpw(peppered_pin, hashed_pin.encode('utf-8'))
+    except ValueError:
+        # Fallback to old SHA-256 logic if it's an old legacy PIN during transition
+        return hashlib.sha256(plain_pin.encode()).hexdigest() == hashed_pin
 
 
 def _insert_supabase_txn(txn_data: dict):
@@ -70,7 +103,9 @@ def _insert_supabase_txn(txn_data: dict):
         if sb:
             sb.table("transactions").insert(txn_data).execute()
     except Exception as e:
+        import traceback
         print(f"[WARN] Supabase insert failed (continuing): {e}")
+        traceback.print_exc()
 
 
 def _insert_local_txn(user_id: int, amount: float, merchant: str, category: str, is_duress: int = 0):
@@ -103,12 +138,27 @@ async def set_upi_pin(req: SetUPIPinRequest, user: dict = Depends(get_current_us
     pin_hash = hash_pin(req.new_pin)
 
     with get_db() as db:
-        # Check if PIN already set
-        existing = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        if existing and existing["upi_pin_hash"]:
+        # Check if PIN already set and verify phone number
+        user_row = db.execute("SELECT upi_pin_hash, phone_no FROM users WHERE id = ?", (user_id,)).fetchone()
+        
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        if user_row["phone_no"] != req.phone_no:
+            raise HTTPException(status_code=400, detail="Mobile number verification failed. Enter the correct registered number.")
+
+        if user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="UPI PIN already set. Use change-pin endpoint.")
 
         db.execute("UPDATE users SET upi_pin_hash = ? WHERE id = ?", (pin_hash, user_id))
+
+    try:
+        from supabase_client import get_supabase
+        sb = get_supabase()
+        if sb:
+            sb.table("users").update({"has_pin": True, "upi_pin_hash": pin_hash}).eq("username", user["username"]).execute()
+    except Exception as e:
+        print(f"[WARN] Supabase user update failed: {e}")
 
     return {"success": True, "message": "UPI PIN set successfully"}
 
@@ -129,16 +179,26 @@ async def upi_send(req: UPIPaymentRequest, user: dict = Depends(get_current_user
 
     # Verify UPI PIN
     with get_db() as db:
-        row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not row or not row["upi_pin_hash"]:
+        # Fetch user details and their ACID balance
+        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user_row or not user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="UPI PIN not set. Please set your PIN first.")
+            
+        current_balance = balance_row["balance"] if balance_row else 0.0
+        if req.amount > current_balance:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
 
         # Check for duress suffix BEFORE verifying
         is_duress = req.upi_pin.endswith(DURESS_PIN_SUFFIX)
         actual_pin = req.upi_pin[:-len(DURESS_PIN_SUFFIX)] if is_duress else req.upi_pin
 
-        if not verify_pin(actual_pin, row["upi_pin_hash"]):
+        if not verify_pin(actual_pin, user_row["upi_pin_hash"]):
             raise HTTPException(status_code=401, detail="Incorrect UPI PIN")
+            
+        new_balance = current_balance - req.amount
+        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
 
     txn_id = f"UPI{uuid.uuid4().hex[:10].upper()}"
     now = datetime.utcnow().isoformat()
@@ -156,11 +216,21 @@ async def upi_send(req: UPIPaymentRequest, user: dict = Depends(get_current_user
             "status": "DURESS_HELD", "is_duress": True, "created_at": now
         })
 
+        await broadcast_payment_update(user_id, {
+            "type": "NEW_TRANSACTION",
+            "new_balance": new_balance,
+            "transaction": {
+                "id": txn_id, "amount": req.amount, "merchant": f"HELD_FOR_{req.to_upi_id}",
+                "category": "DURESS_HOLD", "is_duress": True, "timestamp": now
+            }
+        })
+
         return {
             "success": True,
             "message": f"₹{req.amount:,.2f} sent to {req.to_upi_id}",
             "transaction_id": txn_id,
-            "note": req.note
+            "note": req.note,
+            "new_balance": new_balance
         }
     else:
         # Normal payment
@@ -172,11 +242,21 @@ async def upi_send(req: UPIPaymentRequest, user: dict = Depends(get_current_user
             "status": "SUCCESS", "is_duress": False, "created_at": now
         })
 
+        await broadcast_payment_update(user_id, {
+            "type": "NEW_TRANSACTION",
+            "new_balance": new_balance,
+            "transaction": {
+                "id": txn_id, "amount": -req.amount, "merchant": req.to_upi_id,
+                "category": "UPI_PAYMENT", "is_duress": False, "timestamp": now
+            }
+        })
+
         return {
             "success": True,
             "message": f"₹{req.amount:,.2f} sent to {req.to_upi_id}",
             "transaction_id": txn_id,
-            "note": req.note
+            "note": req.note,
+            "new_balance": new_balance
         }
 
 
@@ -192,15 +272,24 @@ async def neft_transfer(req: BankTransferRequest, user: dict = Depends(get_curre
         raise HTTPException(status_code=400, detail="Amount must be positive")
 
     with get_db() as db:
-        row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not row or not row["upi_pin_hash"]:
+        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user_row or not user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="Transaction PIN not set.")
+            
+        current_balance = balance_row["balance"] if balance_row else 0.0
+        if req.amount > current_balance:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
 
         is_duress = req.txn_pin.endswith(DURESS_PIN_SUFFIX)
         actual_pin = req.txn_pin[:-len(DURESS_PIN_SUFFIX)] if is_duress else req.txn_pin
 
-        if not verify_pin(actual_pin, row["upi_pin_hash"]):
+        if not verify_pin(actual_pin, user_row["upi_pin_hash"]):
             raise HTTPException(status_code=401, detail="Incorrect Transaction PIN")
+            
+        new_balance = current_balance - req.amount
+        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
 
     txn_id = f"NEFT{uuid.uuid4().hex[:10].upper()}"
     now = datetime.utcnow().isoformat()
@@ -216,6 +305,15 @@ async def neft_transfer(req: BankTransferRequest, user: dict = Depends(get_curre
             "ifsc_code": req.ifsc_code, "amount": req.amount, "note": req.note or "",
             "type": "NEFT", "status": "DURESS_HELD", "is_duress": True, "created_at": now
         })
+        
+        await broadcast_payment_update(user_id, {
+            "type": "NEW_TRANSACTION",
+            "new_balance": new_balance,
+            "transaction": {
+                "id": txn_id, "amount": req.amount, "merchant": f"HELD_FOR_{req.to_account}",
+                "category": "DURESS_HOLD", "is_duress": True, "timestamp": now
+            }
+        })
     else:
         _insert_local_txn(user_id, req.amount, req.to_account, "NEFT_TRANSFER", 0)
 
@@ -224,11 +322,21 @@ async def neft_transfer(req: BankTransferRequest, user: dict = Depends(get_curre
             "ifsc_code": req.ifsc_code, "amount": req.amount, "note": req.note or "",
             "type": "NEFT", "status": "SUCCESS", "is_duress": False, "created_at": now
         })
+        
+        await broadcast_payment_update(user_id, {
+            "type": "NEW_TRANSACTION",
+            "new_balance": new_balance,
+            "transaction": {
+                "id": txn_id, "amount": -req.amount, "merchant": req.to_account,
+                "category": "NEFT_TRANSFER", "is_duress": False, "timestamp": now
+            }
+        })
 
     return {
         "success": True,
         "message": f"₹{req.amount:,.2f} transferred to A/C {req.to_account}",
-        "transaction_id": txn_id
+        "transaction_id": txn_id,
+        "new_balance": new_balance
     }
 
 
@@ -241,15 +349,24 @@ async def pay_bill(req: BillPayRequest, user: dict = Depends(get_current_user)):
     username = user["username"]
 
     with get_db() as db:
-        row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not row or not row["upi_pin_hash"]:
+        user_row = db.execute("SELECT upi_pin_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        
+        if not user_row or not user_row["upi_pin_hash"]:
             raise HTTPException(status_code=400, detail="Transaction PIN not set.")
+            
+        current_balance = balance_row["balance"] if balance_row else 0.0
+        if req.amount > current_balance:
+            raise HTTPException(status_code=400, detail="Insufficient balance")
 
         is_duress = req.txn_pin.endswith(DURESS_PIN_SUFFIX)
         actual_pin = req.txn_pin[:-len(DURESS_PIN_SUFFIX)] if is_duress else req.txn_pin
 
-        if not verify_pin(actual_pin, row["upi_pin_hash"]):
+        if not verify_pin(actual_pin, user_row["upi_pin_hash"]):
             raise HTTPException(status_code=401, detail="Incorrect Transaction PIN")
+            
+        new_balance = current_balance - req.amount
+        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
 
     txn_id = f"BILL{uuid.uuid4().hex[:10].upper()}"
     now = datetime.utcnow().isoformat()
@@ -266,10 +383,20 @@ async def pay_bill(req: BillPayRequest, user: dict = Depends(get_current_user)):
         _insert_alert(user_id, "DURESS_BILL", "CRITICAL",
             f"DURESS: User {username} bill payment ₹{req.amount:,.0f} to {req.biller_id} under coercion.")
 
+    await broadcast_payment_update(user_id, {
+        "type": "NEW_TRANSACTION",
+        "new_balance": new_balance,
+        "transaction": {
+            "id": txn_id, "amount": req.amount if is_duress else -req.amount, "merchant": req.biller_id,
+            "category": "BILL_PAYMENT", "is_duress": is_duress, "timestamp": now
+        }
+    })
+
     return {
         "success": True,
         "message": f"Bill of ₹{req.amount:,.2f} paid to {req.biller_id}",
-        "transaction_id": txn_id
+        "transaction_id": txn_id,
+        "new_balance": new_balance
     }
 
 
@@ -333,6 +460,17 @@ async def change_upi_pin(req: ChangeUPIPinRequest, user: dict = Depends(get_curr
             VALUES (?, 'UPI_PIN_CHANGED', 'INFO', ?)
         """, (user_id, f"UPI PIN changed successfully via MFA for user {user['username']}"))
 
+    try:
+        from supabase_client import get_supabase
+        sb = get_supabase()
+        if sb:
+            sb.table("users").update({
+                "has_pin": True,
+                "upi_pin_hash": new_hash
+            }).eq("username", user["username"]).execute()
+    except Exception as e:
+        print(f"[WARN] Supabase user update failed: {e}")
+
     return {"success": True, "message": "UPI PIN changed successfully"}
 
 
@@ -374,3 +512,91 @@ async def pin_status(user: dict = Depends(get_current_user)):
 
     has_pin = bool(row and row["upi_pin_hash"])
     return {"has_pin": has_pin}
+
+# ─── Mock Transaction & Get Transaction Details ────────────────────────
+
+@router.post("/mock-transaction")
+async def mock_transaction(req: MockTransactionRequest, user: dict = Depends(get_current_user)):
+    """Mock an inbound or outbound transaction and update balance in real-time."""
+    user_id = user["user_id"]
+    
+    amount = abs(req.amount)
+    if req.type == "OUTBOUND":
+        amount = -amount
+
+    with get_db() as db:
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        current_balance = balance_row["balance"] if balance_row else 0.0
+        
+        if req.type == "OUTBOUND" and abs(amount) > current_balance:
+            raise HTTPException(status_code=400, detail="Insufficient balance for mock outbound")
+
+        new_balance = current_balance + amount
+        db.execute("UPDATE account_balances SET balance = ? WHERE user_id = ?", (new_balance, user_id))
+        
+        db.execute("""
+            INSERT INTO transactions (user_id, amount, merchant, category, is_duress)
+            VALUES (?, ?, ?, ?, 0)
+        """, (user_id, amount, req.merchant, req.category))
+        
+        txn_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    now = datetime.utcnow().isoformat()
+    
+    # Broadcast to websocket
+    await broadcast_payment_update(user_id, {
+        "type": "NEW_TRANSACTION",
+        "new_balance": new_balance,
+        "transaction": {
+            "id": txn_id, "amount": amount, "merchant": req.merchant,
+            "category": req.category, "is_duress": False, "timestamp": now
+        }
+    })
+
+    return {"success": True, "new_balance": new_balance}
+
+@router.get("/transactions/{txn_id}")
+async def get_transaction_details(txn_id: int, user: dict = Depends(get_current_user)):
+    """Fetch details for a specific transaction."""
+    user_id = user["user_id"]
+    
+    with get_db() as db:
+        txn = db.execute("""
+            SELECT id, amount, merchant, category, is_duress, timestamp
+            FROM transactions WHERE id = ? AND user_id = ?
+        """, (txn_id, user_id)).fetchone()
+        
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+        
+    return dict(txn)
+
+# ─── Payments WebSockets ───────────────────────────────────────────
+
+@router.websocket("/ws/{user_id}")
+async def payment_websocket(websocket: WebSocket, user_id: int):
+    """Real-time updates for payments and balance changes."""
+    await websocket.accept()
+    if user_id not in payment_connections:
+        payment_connections[user_id] = []
+    payment_connections[user_id].append(websocket)
+    
+    # Send initial balance on connection
+    with get_db() as db:
+        balance_row = db.execute("SELECT balance FROM account_balances WHERE user_id = ?", (user_id,)).fetchone()
+        current_balance = balance_row["balance"] if balance_row else 0.0
+    
+    await websocket.send_text(json.dumps({
+        "type": "BALANCE_UPDATE",
+        "balance": current_balance
+    }))
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Handle incoming ping/pong if necessary
+    except WebSocketDisconnect:
+        if user_id in payment_connections:
+            payment_connections[user_id].remove(websocket)
+            if not payment_connections[user_id]:
+                del payment_connections[user_id]

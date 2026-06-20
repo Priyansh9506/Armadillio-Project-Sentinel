@@ -38,6 +38,11 @@ class RefreshRequest(BaseModel):
 class LogoutRequest(BaseModel):
     session_id: str
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+    mfa_token: str
+
 
 # ─── JWT Helpers ────────────────────────────────────────────────────
 
@@ -107,7 +112,7 @@ async def get_current_user(authorization: str = Header(None)) -> dict:
 @router.post("/register")
 async def register(req: RegisterRequest):
     """Register a new user account."""
-    password_hash = bcrypt.hashpw(req.password.encode(), bcrypt.gensalt()).decode()
+    password_hash = hash_password(req.password)
 
     with get_db() as db:
         existing = db.execute(
@@ -138,6 +143,20 @@ async def register(req: RegisterRequest):
             (session_id, user_id, "127.0.0.1")
         )
 
+    # Push to Supabase if available
+    try:
+        from supabase_client import get_supabase
+        sb = get_supabase()
+        if sb:
+            sb.table("users").insert({
+                "username": req.username,
+                "email": req.email,
+                "password_hash": password_hash,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
+    except Exception as e:
+        print(f"[WARN] Supabase user sync failed: {e}")
+
     token = create_access_token({
         "user_id": user_id,
         "username": req.username,
@@ -158,12 +177,32 @@ async def register(req: RegisterRequest):
     }
 
 
+import os
+
+def get_password_pepper() -> bytes:
+    return os.getenv("PASSWORD_PEPPER", "default_secret_password_pepper").encode()
+
+def hash_password(password: str) -> str:
+    """Bcrypt hash with system-wide Pepper (Salt + Pepper) for Password storage."""
+    peppered_pw = password.encode() + get_password_pepper()
+    return bcrypt.hashpw(peppered_pw, bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify Password against the Salted & Peppered Bcrypt hash."""
+    peppered_pw = plain_password.encode() + get_password_pepper()
+    try:
+        return bcrypt.checkpw(peppered_pw, hashed_password.encode('utf-8'))
+    except ValueError:
+        # Legacy fallback for old passwords without pepper
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+
 @router.post("/login")
 async def login(req: LoginRequest, request: Request):
     """Login with username and password. Returns access + refresh token pair."""
     with get_db() as db:
         user = db.execute(
-            "SELECT id, username, email, password_hash, upi_pin_hash FROM users WHERE username = ? OR phone_no = ?",
+            "SELECT id, username, email, password_hash, upi_pin_hash, balance FROM users WHERE username = ? OR phone_no = ?",
             (req.username, req.username)
         ).fetchone()
 
@@ -171,7 +210,7 @@ async def login(req: LoginRequest, request: Request):
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
         if req.login_type == "password":
-            if not bcrypt.checkpw(req.credential.encode(), user["password_hash"].encode()):
+            if not verify_password(req.credential, user["password_hash"]):
                 raise HTTPException(status_code=401, detail="Invalid password")
         elif req.login_type == "pin":
             import hashlib
@@ -212,7 +251,8 @@ async def login(req: LoginRequest, request: Request):
             "user": {
                 "id": user["id"],
                 "username": user["username"],
-                "email": user["email"]
+                "email": user["email"],
+                "balance": user["balance"]
             },
             "trust_score": 100,
             "message": "Login successful"
@@ -271,4 +311,80 @@ async def logout(req: LogoutRequest, user: dict = Depends(get_current_user)):
 @router.get("/me")
 async def get_me(user: dict = Depends(get_current_user)):
     """Return current authenticated user info."""
+    with get_db() as db:
+        user_row = db.execute("SELECT email, balance FROM users WHERE id = ?", (user["user_id"],)).fetchone()
+        if user_row:
+            user["email"] = user_row["email"]
+            user["balance"] = user_row["balance"]
     return user
+
+
+@router.post("/change-password")
+async def change_password(req: ChangePasswordRequest, user: dict = Depends(get_current_user)):
+    """Change user password. Requires old password and an MFA token."""
+    user_id = user["user_id"]
+
+    with get_db() as db:
+        user_row = db.execute(
+            "SELECT password_hash, totp_secret FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if not verify_password(req.old_password, user_row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Incorrect current password")
+
+        # Step 2: Verify MFA token
+        mfa_verified = False
+
+        # Option A: Check if it's a verified push-auth challenge
+        challenge = db.execute(
+            "SELECT status FROM push_auth_challenges WHERE id = ? AND user_id = ?",
+            (req.mfa_token, user_id)
+        ).fetchone()
+        if challenge and challenge["status"] == "VERIFIED":
+            mfa_verified = True
+
+        # Option B: Check TOTP (if user has authenticator setup)
+        if not mfa_verified and user_row["totp_secret"]:
+            try:
+                import pyotp
+                totp = pyotp.TOTP(user_row["totp_secret"])
+                if totp.verify(req.mfa_token, valid_window=1):
+                    mfa_verified = True
+            except Exception:
+                pass
+
+        # Option C: Prototype fallback
+        if not mfa_verified and req.mfa_token == "123456":
+            mfa_verified = True
+
+        if not mfa_verified:
+            raise HTTPException(status_code=403, detail="MFA verification failed. Complete push-auth or enter valid TOTP code.")
+
+        new_password_hash = hash_password(req.new_password)
+
+        db.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (new_password_hash, user_id)
+        )
+
+        # Log a security alert for password change
+        db.execute("""
+            INSERT INTO alerts (user_id, alert_type, severity, description)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, 'password_change', 'MEDIUM', 'Password was successfully changed.'))
+
+    # Push to Supabase
+    try:
+        from supabase_client import get_supabase
+        sb = get_supabase()
+        if sb:
+            sb.table("users").update({
+                "password_hash": new_password_hash
+            }).eq("username", user["username"]).execute()
+    except Exception as e:
+        print(f"[WARN] Supabase password update failed: {e}")
+
+    return {"success": True, "message": "Password changed successfully"}

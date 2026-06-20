@@ -17,27 +17,66 @@ def seed():
     # Let's just insert alerts and past trust logs for the SOC dashboard
     
     # Common Password and PIN Hashes
-    pwd_hash = bcrypt.hashpw(b"password123", bcrypt.gensalt()).decode('utf-8')
-    upi_pin_hash = hashlib.sha256(b"1234").hexdigest()
+    import os
+    pwd_pepper = os.getenv("PASSWORD_PEPPER", "default_secret_password_pepper").encode()
+    peppered_pwd = b"password123" + pwd_pepper
+    pwd_hash = bcrypt.hashpw(peppered_pwd, bcrypt.gensalt()).decode('utf-8')
+    # Generate Salt+Pepper hash for the default PIN "1234"
+    import os
+    pepper = os.getenv("PIN_PEPPER", "default_secret_pepper").encode()
+    peppered_pin = b"1234" + pepper
+    upi_pin_hash = bcrypt.hashpw(peppered_pin, bcrypt.gensalt()).decode('utf-8')
 
     mock_users = [
-        ("priyansh", "priyansh@armadillo.com", "Priyansh Patel", "100010001000", "priyansh@bob", "9876543210"),
-        ("vyom", "vyom@armadillo.com", "Vyom Patel", "200020002000", "vyom@bob", "9123456789"),
-        ("chirag", "chirag@armadillo.com", "Chirag Bhanushali", "300030003000", "chirag@bob", "9988776655")
+        ("priyansh", "priyansh@armadillo.com", "Priyansh Patel", "100010001000", "priyansh@bob", "9876543210", 452380.0),
+        ("vyom", "vyom@armadillo.com", "Vyom Patel", "200020002000", "vyom@bob", "9123456789", 452380.0),
+        ("chirag", "chirag@armadillo.com", "Chirag Bhanushali", "300030003000", "chirag@bob", "9988776655", 150000.0)
     ]
 
     user_ids = []
-    for uname, email, fullname, acc_no, upi, phone in mock_users:
+    for uname, email, fullname, acc_no, upi, phone, balance in mock_users:
         try:
             cursor.execute(
-                """INSERT INTO users (username, email, password_hash, upi_pin_hash, account_no, upi_id, phone_no) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (uname, email, pwd_hash, upi_pin_hash, acc_no, upi, phone)
+                """INSERT INTO users (username, email, password_hash, upi_pin_hash, account_no, upi_id, phone_no, balance) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (uname, email, pwd_hash, upi_pin_hash, acc_no, upi, phone, balance)
             )
-            user_ids.append(cursor.lastrowid)
+            user_id = cursor.lastrowid
+            user_ids.append(user_id)
+            cursor.execute("INSERT INTO account_balances (user_id, balance) VALUES (?, ?)", (user_id, balance))
         except sqlite3.IntegrityError:
             cursor.execute("SELECT id FROM users WHERE username = ?", (uname,))
-            user_ids.append(cursor.fetchone()[0])
+            user_id = cursor.fetchone()[0]
+            user_ids.append(user_id)
+            cursor.execute("INSERT OR IGNORE INTO account_balances (user_id, balance) VALUES (?, ?)", (user_id, balance))
+            
+        # Push to Supabase if it's the first time seeding
+        try:
+            from supabase_client import get_supabase
+            sb = get_supabase()
+            if sb:
+                # Upsert is safer in case they run seed multiple times
+                sb.table("users").upsert({
+                    "username": uname,
+                    "email": email,
+                    "password_hash": pwd_hash,
+                    "upi_pin_hash": upi_pin_hash,
+                    "account_no": acc_no,
+                    "upi_id": upi,
+                    "phone_no": phone,
+                    "balance": balance,
+                    "has_pin": True,
+                    "created_at": datetime.utcnow().isoformat()
+                }, on_conflict="username").execute()
+                
+                sb.table("bank_accounts").upsert({
+                    "upi_id": upi,
+                    "account_no": acc_no,
+                    "name_of_customer": fullname,
+                    "balance": balance
+                }, on_conflict="upi_id").execute()
+        except Exception as e:
+            pass # Silently fail if Supabase users table doesn't exist yet
 
     priyansh_id, victim_id, insider_id = user_ids
 

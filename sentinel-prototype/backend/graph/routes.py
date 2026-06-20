@@ -13,6 +13,7 @@ router = APIRouter()
 NEO4J_URI = os.getenv("NEO4J_URI", "")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 _driver = None
 
@@ -38,7 +39,7 @@ def query_neo4j_graph():
         return None
 
     try:
-        with driver.session() as session:
+        with driver.session(database=NEO4J_DATABASE) as session:
             # Fetch all nodes
             node_result = session.run("""
                 MATCH (n)

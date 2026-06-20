@@ -25,7 +25,15 @@ def init_db():
             account_no TEXT,
             upi_id TEXT,
             phone_no TEXT,
+            balance REAL DEFAULT 100000.0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS account_balances (
+            user_id INTEGER PRIMARY KEY,
+            balance REAL DEFAULT 0.0,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS behavioral_baselines (

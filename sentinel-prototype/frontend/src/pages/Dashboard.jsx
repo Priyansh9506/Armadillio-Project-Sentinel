@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import TrustGauge from '../components/TrustGauge';
 import MFAChallenge from '../components/MFAChallenge';
 import telemetrySDK from '../sdk/telemetry';
+import { authAPI, paymentsAPI } from '../api';
 
 const MOCK_TRANSACTIONS = [
   { id: 1, merchant: 'Swiggy', amount: -2000, date: 'Today', category: 'Food' },
@@ -21,7 +22,8 @@ export default function Dashboard() {
   const [decision, setDecision] = useState('ALLOW');
   const [mfaMethod, setMfaMethod] = useState(null);
   const [showMFA, setShowMFA] = useState(false);
-  const [activeModal, setActiveModal] = useState(null); // 'transfer' | 'upi' | 'bills' | 'setpin' | 'changepin' | null
+  const [transactions, setTransactions] = useState([]);
+  const [activeModal, setActiveModal] = useState(null); // 'transfer' | 'upi' | 'bills' | 'setpin' | 'changepin' | 'mocktxn' | null
   const [transferAmount, setTransferAmount] = useState('');
   const [transferAccount, setTransferAccount] = useState('');
   const [transferIfsc, setTransferIfsc] = useState('');
@@ -35,6 +37,12 @@ export default function Dashboard() {
   const [newPin, setNewPin] = useState('');
   const [pinChangeStatus, setPinChangeStatus] = useState(null);
   const [pendingPinChange, setPendingPinChange] = useState(false);
+  const [verifyPhone, setVerifyPhone] = useState('');
+  
+  // Password change state
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [pendingPasswordChange, setPendingPasswordChange] = useState(false);
   
   // Hackathon Demo Mode: Give presenter control over the auto-lock popup
   const [demoAutoLock, setDemoAutoLock] = useState(false);
@@ -56,6 +64,12 @@ export default function Dashboard() {
     }
 
     setUser(JSON.parse(userData));
+
+    // Fetch live user data (including balance)
+    authAPI.getMe().then(r => {
+      setUser(r.data);
+      localStorage.setItem('sentinel_user', JSON.stringify(r.data));
+    }).catch(() => {});
 
     // Start the telemetry SDK
     telemetrySDK.start(sessionId, (data) => {
@@ -80,31 +94,62 @@ export default function Dashboard() {
     return () => telemetrySDK.stop();
   }, [navigate]);
 
-  // Check if UPI PIN is set on load
+  // Check if UPI PIN is set on load and fetch transactions
   useEffect(() => {
     const token = localStorage.getItem('sentinel_token');
     if (!token) return;
-    fetch('http://localhost:8000/api/payments/pin-status', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    })
-      .then(r => r.json())
-      .then(d => setHasPIN(d.has_pin))
+    
+    paymentsAPI.getPinStatus()
+      .then(r => setHasPIN(r.data.has_pin))
+      .catch(() => {});
+      
+    paymentsAPI.getTransactions()
+      .then(r => {
+        const realTxns = r.data.transactions || [];
+        setTransactions([...realTxns, ...MOCK_TRANSACTIONS]);
+      })
       .catch(() => {});
   }, []);
+
+  // Payments WebSocket for Real-Time Updates
+  useEffect(() => {
+    if (!user) return;
+
+    let ws = new WebSocket(`ws://localhost:8000/api/payments/ws/${user.user_id}`);
+    
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'BALANCE_UPDATE') {
+          setUser(prev => {
+            const updated = { ...prev, balance: data.balance };
+            localStorage.setItem('sentinel_user', JSON.stringify(updated));
+            return updated;
+          });
+        } else if (data.type === 'NEW_TRANSACTION') {
+          setUser(prev => {
+            const updated = { ...prev, balance: data.new_balance };
+            localStorage.setItem('sentinel_user', JSON.stringify(updated));
+            return updated;
+          });
+          setTransactions(prev => [data.transaction, ...prev].slice(0, 20));
+        }
+      } catch (err) {
+        console.error("WS Parsing error:", err);
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [user?.user_id]);
 
   const handleLogout = async () => {
     telemetrySDK.stop();
     const sessionId = localStorage.getItem('sentinel_session');
     if (sessionId) {
       try {
-        await fetch('http://localhost:8000/api/auth/logout', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('sentinel_token')}`
-          },
-          body: JSON.stringify({ session_id: sessionId })
-        });
+        await authAPI.logout({ session_id: sessionId });
       } catch (err) {
         console.error('Logout error', err);
       }
@@ -124,22 +169,24 @@ export default function Dashboard() {
     if (pendingPinChange) {
       setPendingPinChange(false);
       try {
-        const token = localStorage.getItem('sentinel_token');
-        const res = await fetch('http://localhost:8000/api/payments/change-upi-pin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ old_pin: oldPin, new_pin: newPin, mfa_token: challengeId }),
-        });
-        const data = await res.json();
-        if (!res.ok) { 
-          alert('PIN Change Failed: ' + data.detail);
-          return; 
-        }
+        await paymentsAPI.changeUpiPin({ old_pin: oldPin, new_pin: newPin, mfa_token: challengeId });
         alert('✅ UPI PIN changed successfully!');
         setOldPin(''); 
         setNewPin('');
       } catch (err) { 
         alert('Failed to change PIN. Network error.'); 
+      }
+    }
+
+    if (pendingPasswordChange) {
+      setPendingPasswordChange(false);
+      try {
+        await authAPI.changePassword({ old_password: oldPassword, new_password: newPassword, mfa_token: challengeId });
+        alert('✅ Password changed successfully!');
+        setOldPassword(''); 
+        setNewPassword('');
+      } catch (err) { 
+        alert('Failed to change password. Network error.'); 
       }
     }
   };
@@ -149,50 +196,35 @@ export default function Dashboard() {
     setTransferError('');
     const token = localStorage.getItem('sentinel_token');
     const session_id = localStorage.getItem('sentinel_session');
-    let url, body;
-
-    if (activeModal === 'upi') {
-      url = 'http://localhost:8000/api/payments/upi/send';
-      body = { session_id, to_upi_id: transferAccount, amount: parseFloat(transferAmount), note: transferNote, upi_pin: transferPin };
-    } else if (activeModal === 'transfer') {
-      url = 'http://localhost:8000/api/payments/transfer/neft';
-      body = { session_id, to_account: transferAccount, ifsc_code: transferIfsc, amount: parseFloat(transferAmount), note: transferNote, txn_pin: transferPin };
-    } else if (activeModal === 'bills') {
-      url = 'http://localhost:8000/api/payments/bills/pay';
-      body = { session_id, biller_id: transferAccount, amount: parseFloat(transferAmount), txn_pin: transferPin };
-    }
-
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) { setTransferError(data.detail || 'Payment failed'); return; }
-      setTransferStatus(data);
+      let res;
+      if (activeModal === 'upi') {
+        res = await paymentsAPI.upiSend({ session_id, to_upi_id: transferAccount, amount: parseFloat(transferAmount), note: transferNote, upi_pin: transferPin });
+      } else if (activeModal === 'transfer') {
+        res = await paymentsAPI.transferNeft({ session_id, to_account: transferAccount, ifsc_code: transferIfsc, amount: parseFloat(transferAmount), note: transferNote, txn_pin: transferPin });
+      } else if (activeModal === 'bills') {
+        res = await paymentsAPI.billsPay({ session_id, biller_id: transferAccount, amount: parseFloat(transferAmount), txn_pin: transferPin });
+      } else if (activeModal === 'mocktxn') {
+        res = await paymentsAPI.mockTransaction({ amount: parseFloat(transferAmount), merchant: transferAccount, category: 'Mock Transfer', type: transferNote || 'INBOUND' });
+      }
+      
+      setTransferStatus(res.data);
+      // Wait for WS to update balance/transactions in the background
       setTimeout(() => {
         setActiveModal(null); setTransferStatus(null); setTransferError('');
         setTransferAmount(''); setTransferAccount(''); setTransferIfsc('');
         setTransferNote(''); setTransferPin('');
       }, 3000);
     } catch (err) {
-      setTransferError('Network error. Check if backend is running.');
+      setTransferError(err.response?.data?.detail || 'Network error.');
     }
   };
 
   const handleSetPin = async (e) => {
     e.preventDefault();
     setTransferError('');
-    const token = localStorage.getItem('sentinel_token');
     try {
-      const res = await fetch('http://localhost:8000/api/payments/set-upi-pin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ new_pin: newPin }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setTransferError(data.detail); return; }
+      await paymentsAPI.setUpiPin({ new_pin: newPin, phone_no: verifyPhone });
       setHasPIN(true);
       setTransferStatus({ message: 'UPI PIN set successfully! You can now make payments.' });
       setNewPin('');
@@ -212,6 +244,20 @@ export default function Dashboard() {
     setActiveModal(null);
     setMfaMethod('PUSH_AUTH');
     setPendingPinChange(true);
+    setShowMFA(true);
+  };
+
+  const triggerPasswordChangeMfa = (e) => {
+    e.preventDefault();
+    setTransferError('');
+    if (oldPassword === newPassword) {
+      setTransferError('New password must be different from current password');
+      return;
+    }
+    
+    setActiveModal(null);
+    setMfaMethod('PUSH_AUTH');
+    setPendingPasswordChange(true);
     setShowMFA(true);
   };
 
@@ -300,8 +346,9 @@ export default function Dashboard() {
                   Savings Account
                 </p>
                 <h2 style={{ fontSize: '2rem', fontWeight: 800, marginTop: 4 }}>
-                  <span className="text-muted" style={{ fontSize: '1.2rem' }}>&#x20b9;</span>4,52,380
-                  <span className="text-muted" style={{ fontSize: '1rem' }}>.00</span>
+                  <span className="text-muted" style={{ fontSize: '1.2rem' }}>&#x20b9;</span>
+                  {user?.balance ? user.balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split('.')[0] : '0'}
+                  <span className="text-muted" style={{ fontSize: '1rem' }}>.{user?.balance ? user.balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).split('.')[1] : '00'}</span>
                 </h2>
               </div>
               <div style={{
@@ -332,8 +379,16 @@ export default function Dashboard() {
               <button className="btn btn-outline btn-sm" onClick={() => hasPIN ? setActiveModal('bills') : setActiveModal('setpin')}>
                 Pay Bills
               </button>
-              <button className="btn btn-outline btn-sm" onClick={() => setActiveModal('changepin')}>
-                Change PIN
+              {hasPIN && (
+                <button className="btn btn-outline btn-sm" onClick={() => setActiveModal('changepin')}>
+                  Change PIN
+                </button>
+              )}
+              <button className="btn btn-outline btn-sm" onClick={() => setActiveModal('changepassword')}>
+                Change Password
+              </button>
+              <button className="btn btn-primary btn-sm" style={{ background: 'var(--brand-purple)', borderColor: 'var(--brand-purple)' }} onClick={() => setActiveModal('mocktxn')}>
+                Mock Txn
               </button>
               {/* DEMO CONTROL BUTTON */}
               <button 
@@ -351,33 +406,35 @@ export default function Dashboard() {
             <h3 style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: 16, color: 'var(--text-secondary)' }}>
               Recent Transactions
             </h3>
-            {MOCK_TRANSACTIONS.map(txn => (
-              <div className="txn-row" key={txn.id}>
-                <div>
-                  <p style={{ fontWeight: 500, fontSize: '0.9rem' }}>{txn.merchant}</p>
-                  <p className="text-muted" style={{ fontSize: '0.75rem' }}>{txn.date} &bull; {txn.category}</p>
+            {transactions.length === 0 ? (
+              <p className="text-muted" style={{ fontSize: '0.85rem' }}>No recent transactions.</p>
+            ) : (
+              transactions.map(txn => (
+                <div className="txn-row" key={txn.id}>
+                  <div>
+                    <p style={{ fontWeight: 500, fontSize: '0.9rem' }}>{txn.merchant}</p>
+                    <p className="text-muted" style={{ fontSize: '0.75rem' }}>{new Date(txn.timestamp).toLocaleString()} &bull; {txn.category}</p>
+                  </div>
+                  <div className={`txn-amount ${txn.amount < 0 ? 'negative' : 'positive'}`}
+                    style={{ fontWeight: 600, fontSize: '0.95rem', fontFamily: "'JetBrains Mono', monospace" }}>
+                    {txn.amount < 0 ? '-' : '+'}&#x20b9;{Math.abs(txn.amount).toLocaleString('en-IN')}
+                  </div>
                 </div>
-                <div className={`txn-amount ${txn.amount < 0 ? 'negative' : 'positive'}`}
-                  style={{ fontWeight: 600, fontSize: '0.95rem', fontFamily: "'JetBrains Mono', monospace" }}>
-                  {txn.amount < 0 ? '-' : '+'}&#x20b9;{Math.abs(txn.amount).toLocaleString('en-IN')}
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
 
           {/* Telemetry Status */}
           <div className="glass-card p-4">
             <div className="flex items-center gap-3">
-              <div style={{
-                width: 8, height: 8, borderRadius: '50%',
-                background: 'var(--trust-green)',
-                boxShadow: '0 0 8px var(--trust-green)',
-                animation: 'pulse 2s infinite',
-              }} />
-              <span className="text-muted" style={{ fontSize: '0.8rem' }}>
-                Behavioral telemetry active &bull; Sending every 3s
+              <div style={{ width: 10, height: 10, borderRadius: '50%', background: isLocked ? 'var(--trust-red)' : 'var(--trust-green)', boxShadow: isLocked ? '0 0 8px var(--trust-red)' : '0 0 8px var(--trust-green)' }}></div>
+              <span className="text-secondary" style={{ fontSize: '0.8rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {isLocked ? 'Telemetry Suspended' : 'Telemetry Active'}
               </span>
             </div>
+            <p className="text-muted mt-2" style={{ fontSize: '0.75rem', lineHeight: 1.4 }}>
+              Background behavioral analysis running at 3s intervals.
+            </p>
           </div>
         </div>
       </div>
@@ -397,6 +454,11 @@ export default function Dashboard() {
                 <p className="text-muted mb-4" style={{ fontSize: '0.85rem' }}>
                   Set a 4 or 6 digit UPI PIN to authorize payments.
                 </p>
+                <div className="input-group mb-4">
+                  <label>Verify Registered Mobile Number</label>
+                  <input className="input-field" type="text" placeholder="Enter mobile number"
+                    maxLength={15} value={verifyPhone || ''} onChange={e => setVerifyPhone(e.target.value)} required />
+                </div>
                 <div className="input-group mb-4">
                   <label>New UPI PIN</label>
                   <input className="input-field" type="password" placeholder="4 or 6 digits"
@@ -446,9 +508,35 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+      {/* ─── CHANGE PASSWORD Modal ─── */}
+      {activeModal === 'changepassword' && (
+        <div className="mfa-overlay" onClick={() => setActiveModal(null)}>
+          <div className="mfa-modal" onClick={e => e.stopPropagation()}>
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: 6 }}>🔑 Change Password</h2>
+            <p className="text-muted mb-4" style={{ fontSize: '0.8rem' }}>Requires old password + MFA verification</p>
+            <form onSubmit={triggerPasswordChangeMfa}>
+              <div className="input-group mb-4">
+                <label>Current Password</label>
+                <input className="input-field" type="password" placeholder="Enter current password"
+                  value={oldPassword} onChange={e => setOldPassword(e.target.value)} required />
+              </div>
+              <div className="input-group mb-4">
+                <label>New Password</label>
+                <input className="input-field" type="password" placeholder="Enter new password"
+                  value={newPassword} onChange={e => setNewPassword(e.target.value)} required />
+              </div>
+              {transferError && <p style={{ color: 'var(--trust-red)', fontSize: '0.85rem', marginBottom: 12 }}>{transferError}</p>}
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button className="btn btn-outline btn-full" type="button" onClick={() => setActiveModal(null)}>Cancel</button>
+                <button className="btn btn-primary btn-full" type="submit">Verify</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
-      {/* ─── Payment Modals (UPI / NEFT / Bills) ─── */}
-      {(activeModal === 'upi' || activeModal === 'transfer' || activeModal === 'bills') && (
+      {/* ─── Payment Modals (UPI / NEFT / Bills / Mock) ─── */}
+      {(activeModal === 'upi' || activeModal === 'transfer' || activeModal === 'bills' || activeModal === 'mocktxn') && (
         <div className="mfa-overlay" onClick={() => setActiveModal(null)}>
           <div className="mfa-modal" onClick={e => e.stopPropagation()}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
@@ -456,6 +544,7 @@ export default function Dashboard() {
                 {activeModal === 'transfer' && '🏦 NEFT / IMPS Transfer'}
                 {activeModal === 'upi' && '📱 Send via UPI'}
                 {activeModal === 'bills' && '📄 Pay Utility Bill'}
+                {activeModal === 'mocktxn' && '🧪 Mock Real-Time Transaction'}
               </h2>
               <div style={{ 
                 fontSize: '0.7rem', padding: '4px 8px', borderRadius: '4px',
@@ -501,6 +590,22 @@ export default function Dashboard() {
                     <input className="input-field" placeholder="e.g. 1000987654"
                       value={transferAccount} onChange={e => setTransferAccount(e.target.value)} required />
                   </div>
+                ) : activeModal === 'mocktxn' ? (
+                  <>
+                    <div className="input-group mb-4">
+                      <label>Sender/Receiver Name</label>
+                      <input className="input-field" placeholder="e.g. Alice"
+                        value={transferAccount} onChange={e => setTransferAccount(e.target.value)} required />
+                    </div>
+                    <div className="input-group mb-4">
+                      <label>Type</label>
+                      <select className="input-field" value={transferNote} onChange={e => setTransferNote(e.target.value)} required>
+                        <option value="">Select Direction</option>
+                        <option value="INBOUND">Receive Money (Inbound)</option>
+                        <option value="OUTBOUND">Send Money (Outbound)</option>
+                      </select>
+                    </div>
+                  </>
                 ) : (
                   <>
                     <div className="input-group mb-4">
@@ -522,7 +627,7 @@ export default function Dashboard() {
                     value={transferAmount} onChange={e => setTransferAmount(e.target.value)} required />
                 </div>
 
-                {activeModal !== 'bills' && (
+                {activeModal !== 'bills' && activeModal !== 'mocktxn' && (
                   <div className="input-group mb-4">
                     <label>Add a Note (optional)</label>
                     <input className="input-field" placeholder="e.g. Dinner split, Rent"
@@ -530,21 +635,25 @@ export default function Dashboard() {
                   </div>
                 )}
 
-                <div className="input-group mb-4">
-                  <label>{activeModal === 'upi' ? 'UPI PIN' : 'Transaction PIN'}</label>
-                  <input className="input-field" type="password" placeholder="Enter PIN" maxLength={10}
-                    value={transferPin} onChange={e => setTransferPin(e.target.value)} required />
-                </div>
+                {activeModal !== 'mocktxn' && (
+                  <div className="input-group mb-4">
+                    <label>{activeModal === 'upi' ? 'UPI PIN' : 'Transaction PIN'}</label>
+                    <input className="input-field" type="password" placeholder="Enter PIN" maxLength={10}
+                      value={transferPin} onChange={e => setTransferPin(e.target.value)} required />
+                  </div>
+                )}
 
                 {transferError && <p style={{ color: 'var(--trust-red)', fontSize: '0.85rem', marginBottom: 12 }}>{transferError}</p>}
 
-                <p className="text-muted mb-4" style={{ fontSize: '0.7rem' }}>
-                  🛡️ Under duress? Append 9999 to your PIN — the transaction will appear successful but funds will be held securely.
-                </p>
+                {activeModal !== 'mocktxn' && (
+                  <p className="text-muted mb-4" style={{ fontSize: '0.7rem' }}>
+                    🛡️ Under duress? Append 9999 to your PIN — the transaction will appear successful but funds will be held securely.
+                  </p>
+                )}
                 <div style={{ display: 'flex', gap: '10px' }}>
                   <button className="btn btn-outline btn-full" type="button" onClick={() => setActiveModal(null)}>Cancel</button>
                   <button className="btn btn-primary btn-full" type="submit">
-                    {activeModal === 'bills' ? 'Pay Bill' : activeModal === 'upi' ? 'Send via UPI' : 'Confirm Transfer'}
+                    {activeModal === 'bills' ? 'Pay Bill' : activeModal === 'upi' ? 'Send via UPI' : activeModal === 'mocktxn' ? 'Simulate Transaction' : 'Confirm Transfer'}
                   </button>
                 </div>
               </form>

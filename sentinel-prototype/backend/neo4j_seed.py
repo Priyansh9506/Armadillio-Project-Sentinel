@@ -19,6 +19,7 @@ if env_path.exists():
 NEO4J_URI = os.getenv("NEO4J_URI", "")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 if not NEO4J_URI or "xxxxxxxx" in NEO4J_URI:
     print("ERROR: Please set NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD in backend/.env first!")
@@ -40,7 +41,7 @@ def seed_neo4j():
     driver.verify_connectivity()
     print("[OK] Connected to Neo4j!")
 
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         # Clear existing data
         session.run("MATCH (n) DETACH DELETE n")
         print("[OK] Cleared old data.")

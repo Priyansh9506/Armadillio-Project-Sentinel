@@ -48,6 +48,21 @@ export const authAPI = {
   login: (data) => api.post('/auth/login', data),
   logout: (data) => api.post('/auth/logout', data),
   refresh: (data) => api.post('/auth/refresh', data),
+  getMe: () => api.get('/auth/me'),
+  changePassword: (data) => api.post('/auth/change-password', data),
+};
+
+// ─── Payments ────────────────────────────────────────────────
+export const paymentsAPI = {
+  setUpiPin: (data) => api.post('/payments/set-upi-pin', data),
+  changeUpiPin: (data) => api.post('/payments/change-upi-pin', data),
+  upiSend: (data) => api.post('/payments/upi/send', data),
+  transferNeft: (data) => api.post('/payments/transfer/neft', data),
+  billsPay: (data) => api.post('/payments/bills/pay', data),
+  getTransactions: () => api.get('/payments/transactions'),
+  getTransactionDetails: (txnId) => api.get(`/payments/transactions/${txnId}`),
+  mockTransaction: (data) => api.post('/payments/mock-transaction', data),
+  getPinStatus: () => api.get('/payments/pin-status'),
 };
 
 // ─── Telemetry ─────────────────────────────────────────────
